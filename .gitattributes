@@ -10,3 +10,8 @@ CMakeLists.txt text eol=lf
 *.md text eol=lf
 *.json text eol=lf
 *.env text eol=lf
+
+# Preserve the vendor legal text byte-for-byte; its pinned SHA-256 is also
+# verified by the runtime packager. Vendor formatting intentionally includes
+# trailing spaces, so do not apply source whitespace diagnostics to it.
+licenses/NVIDIA-CUDA-13.2-EULA.txt -text -whitespace
