@@ -1,0 +1,8 @@
+#ifndef H3CSPEED_SYS_IOCTL_H
+#define H3CSPEED_SYS_IOCTL_H
+#if defined(_WIN32)
+static inline int ioctl(int fd, unsigned long request, ...) { (void)fd; (void)request; return -1; }
+#else
+#include_next <sys/ioctl.h>
+#endif
+#endif

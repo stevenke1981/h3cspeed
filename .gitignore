@@ -1,0 +1,67 @@
+# Generated build trees and CMake dependency caches.
+/build*/
+**/build*/
+/_deps/
+**/_deps/
+
+# Downloaded upstream/model dependencies are prepared by bootstrap/download
+# helpers and are intentionally not part of the source repository.
+/third_party/
+
+# Runtime media, traces, logs, and local validation output.
+/outputs/
+**/outputs/
+*.log
+*.trace
+*.dmp
+
+# Native/compiler products (including Windows debug symbols).
+*.a
+*.bin
+*.d
+*.dll
+*.dylib
+*.exe
+*.exp
+*.gch
+*.ilk
+*.lib
+*.map
+*.o
+*.obj
+*.pch
+*.pdb
+*.so
+*.wasm
+
+# Python/tool caches and local credentials.
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+**/.cache/
+*.pyc
+*.pyo
+.env
+.env.*
+!.env.example
+*.pem
+*.secret
+*.token
+*.key
+.npmrc
+.netrc
+credentials.json
+token.json
+hf_token*
+huggingface_token*
+id_rsa
+id_ed25519
+*.p12
+*.pfx
+
+# Archives/checksums created by scripts/package.py.
+*.zip
+*.zip.sha256

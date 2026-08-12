@@ -1,0 +1,10 @@
+{
+  "generated_utc": "2026-08-11T19:20:00+00:00",
+  "llama_cpp_reference_commit": "f785fc9ea485e6cfdda129978310aa52939c3619",
+  "model_repository": "MiniMaxAI/MiniMax-H3",
+  "model_revision": "939557dc319dd91227e30195a763f272ba7f8765",
+  "name": "h3cspeed",
+  "source_date_epoch": 1786476000,
+  "upstream_h3_commit": "8974cc055ea9c02fcd14cc27dfda3e1027c05153",
+  "version": "0.2.0"
+}

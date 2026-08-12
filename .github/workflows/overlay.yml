@@ -1,0 +1,27 @@
+name: overlay checks
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install syntax-check dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libicu-dev pkg-config
+      - name: Configure portable checks
+        run: cmake -S . -B build-overlay -DH3CSPEED_OVERLAY_TESTS_ONLY=ON
+      - name: Build
+        run: cmake --build build-overlay --parallel
+      - name: Test
+        run: ctest --test-dir build-overlay --output-on-failure
+      - name: Python checks
+        run: |
+          python3 -m py_compile scripts/*.py
+          python3 scripts/source_syntax_lint.py
+          python3 scripts/verify_backend_api.py
