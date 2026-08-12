@@ -24,7 +24,7 @@ UPSTREAM_REPO = "antirez/h3.c"
 UPSTREAM_COMMIT = "8974cc055ea9c02fcd14cc27dfda3e1027c05153"
 ARCHIVE_URL = f"https://github.com/{UPSTREAM_REPO}/archive/{UPSTREAM_COMMIT}.zip"
 ARCHIVE_SHA256 = "dc6d3cd25cb70d5c723292e60f3f3b9093688a731467008a691d9a7412d3e8f3"
-PREPARED_TREE_SHA256 = "c9d8fd342cdc60dea1b68212ca4f54d85f39c1756f0fc2a03c8d569c0abd23d1"
+PREPARED_TREE_SHA256 = "72b21049757828c659a1da26ffa440df76942d8e7453f8648a0598408399f432"
 
 # Git blob SHA-1 values, not ordinary file hashes. They pin the exact interfaces
 # on which the CUDA overlay was developed.
@@ -58,7 +58,7 @@ EXPECTED_GIT_BLOBS = {
 # of the generated marker detects edited or stale prepared trees without a
 # network request on every configure.
 PREPARED_GIT_BLOBS: dict[str, str] = {
-    "h3.c": "8e2a2870928882ad5e14c9ad3b6ee708e0840bf7",
+    "h3.c": "c04766167048a1fbed7f4206d9e5dd90d9f0098e",
     "h3.h": "29640b37abaa056341cf5e827ecc9df501ca7c5c",
     "h3_gpu.h": "7fb2871f0c7fca24c029fff80e1a135e06092a72",
     "h3_host.c": "6e875effe9dbe4294a3e35207806282decbad304",
@@ -194,7 +194,8 @@ def patch_windows_stat(root: Path) -> None:
     path = root / "h3.c"
     text = path.read_text(encoding="utf-8")
     old = '    return h3_key_append(key, "|%s=%zu:%s:%lld:%lld:%ld", role, strlen(path),\n                         path, (long long)status.st_size,\n                         (long long)status.st_mtimespec.tv_sec,\n                         status.st_mtimespec.tv_nsec);'
-    new = '#if defined(_WIN32)\n    return h3_key_append(key, "|%s=%zu:%s:%lld:%lld:%d", role, strlen(path),\n                         path, (long long)status.st_size,\n                         (long long)status.st_mtime, 0);\n#else\n' + old + '\n#endif'
+    linux = '    return h3_key_append(key, "|%s=%zu:%s:%lld:%lld:%ld", role, strlen(path),\n                         path, (long long)status.st_size,\n                         (long long)status.st_mtim.tv_sec,\n                         status.st_mtim.tv_nsec);'
+    new = '#if defined(_WIN32)\n    return h3_key_append(key, "|%s=%zu:%s:%lld:%lld:%d", role, strlen(path),\n                         path, (long long)status.st_size,\n                         (long long)status.st_mtime, 0);\n#elif defined(__APPLE__)\n' + old + '\n#else\n' + linux + '\n#endif'
     if old not in text:
         raise RuntimeError("unable to locate h3.c stat key")
     path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\n")
@@ -226,7 +227,8 @@ def patch_text_embedding_sidecar(root: Path) -> None:
         text = text.replace(include, include + include_marker, 1)
     if "h3_parse_sha256_hex" not in text:
         include = '#include "h3_text_embedding_file.h"\n'
-        helper = '''
+        helper = '''#include <string.h>
+
 static int h3_parse_sha256_hex(const char *text, uint8_t output[32]) {
     if (!text || strlen(text) != 64) return 0;
     for (size_t index = 0; index < 32; index++) {

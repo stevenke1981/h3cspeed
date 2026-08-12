@@ -297,6 +297,19 @@ class LowVramBackendTest(unittest.TestCase):
         self.assertIn("h3_text_encode_bf16", sidecar_branch)
         self.assertNotIn("h3_text_encode_bf16", sidecar_branch[:sidecar_branch.index("else {")])
 
+    def test_sidecar_stat_key_is_linux_and_macos_portable(self) -> None:
+        bootstrap = (ROOT / "scripts/bootstrap.py").read_text(encoding="utf-8")
+        for marker in ("#elif defined(__APPLE__)", "status.st_mtim.tv_sec",
+                       "status.st_mtimespec.tv_sec", "#include <string.h>"):
+            self.assertIn(marker, bootstrap)
+        prepared = ROOT / "third_party/h3/h3.c"
+        if prepared.is_file():
+            source = prepared.read_text(encoding="utf-8")
+            self.assertLess(source.index("#include <string.h>"),
+                            source.index("h3_parse_sha256_hex"))
+            self.assertIn("#elif defined(__APPLE__)", source)
+            self.assertIn("status.st_mtim.tv_sec", source)
+
 
 if __name__ == "__main__":
     unittest.main()
