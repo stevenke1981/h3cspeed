@@ -25,13 +25,23 @@ consult the upstream distribution terms before use.
 
 The portable tokenizer builds with yyjson commit
 `9ddba001a4ea88e93b46932e5c5b87b222e19a5f` through CMake FetchContent.
-yyjson is distributed under the MIT license.
+yyjson is distributed under the MIT license. Its complete notice is included
+at `licenses/yyjson-LICENSE` and in binary runtime archives.
 
 ## ICU
 
 Unicode normalization and category handling use the system ICU C library.
 ICU carries the Unicode/ICU license; consult the installed package for its
-complete notices.
+complete notices. Windows binary runtime archives include ICU 76 runtime DLLs
+and a copy of the applicable ICU license under `licenses/`.
+
+## NVIDIA CUDA runtime libraries
+
+Binary runtime archives may include the CUDA 13.2 cuBLAS and cuBLASLt runtime
+libraries required by the linked executable. They are redistributed under the
+NVIDIA CUDA Toolkit EULA, a copy of which is included in each such archive
+under `licenses/NVIDIA-CUDA-EULA.txt`. NVIDIA driver libraries are never
+bundled; a compatible host driver remains required.
 
 ## llama.cpp / GGML
 

@@ -155,6 +155,9 @@ class FastQualityProfileStaticTest(unittest.TestCase):
         self.assertIn('"$SCRIPT_DIR/h3cspeed.exe"', (
             ROOT / "scripts/run-3070ti-8gb.sh"
         ).read_text(encoding="utf-8"))
+        self.assertIn('"$ROOT/bin/h3cspeed"', (
+            ROOT / "scripts/run-3070ti-8gb.sh"
+        ).read_text(encoding="utf-8"))
 
     def test_bilingual_docs_describe_preset_and_stream_reread_boundary(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")

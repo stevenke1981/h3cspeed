@@ -56,6 +56,13 @@
   exited 0, passed full decode and showed a recognizable fox; the 20-step
   artifact and measured offload telemetry are recorded in
   `VALIDATION_RESULTS.md`.
+- Added model-free Windows and Linux CUDA 13.2 / `sm_86` runtime archives with
+  private CUDA/ICU dependency closure, redistribution notices, deterministic
+  file manifests and fail-closed exclusion of models, sidecars and media.
+- Added a pinned Linux GitHub Actions binary build; Windows binaries are built
+  and tested on the local RTX 3070 Ti acceptance host. Hosted Linux evidence is
+  explicitly limited to compile/link/startup and embedded architecture checks;
+  GPU inference remains a separate `sm_86` acceptance gate.
 
 ## 0.1.0 — engineering preview
 

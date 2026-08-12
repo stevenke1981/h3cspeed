@@ -8,6 +8,12 @@ if [[ -x "$SCRIPT_DIR/h3cspeed" ]]; then
 elif [[ -x "$SCRIPT_DIR/h3cspeed.exe" ]]; then
     # Installed native Windows layout when invoked through Git Bash.
     H3_BINARY="$SCRIPT_DIR/h3cspeed.exe"
+elif [[ -x "$ROOT/bin/h3cspeed" ]]; then
+    # Extracted Linux runtime archive layout.
+    H3_BINARY="$ROOT/bin/h3cspeed"
+elif [[ -x "$ROOT/bin/h3cspeed.exe" ]]; then
+    # Extracted Windows runtime archive layout when invoked through Git Bash.
+    H3_BINARY="$ROOT/bin/h3cspeed.exe"
 elif [[ -x "$ROOT/build-native/h3cspeed.exe" ]]; then
     # Native Windows developer layout when invoked through Git Bash.
     H3_BINARY="$ROOT/build-native/h3cspeed.exe"

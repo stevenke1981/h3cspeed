@@ -33,12 +33,19 @@ class ProjectMetadataTest(unittest.TestCase):
         self.assertIn("CudaArchitectures must be", script)
 
     def test_github_actions_are_pinned_to_immutable_commits(self) -> None:
-        workflow = (ROOT / ".github/workflows/overlay.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("actions/checkout@v4", workflow)
-        self.assertRegex(workflow, r"actions/checkout@[0-9a-f]{40}\s+# v4")
-        self.assertIn("permissions:\n  contents: read", workflow)
+        workflows = [
+            (ROOT / ".github/workflows/overlay.yml").read_text(encoding="utf-8"),
+            (ROOT / ".github/workflows/binary-builds.yml").read_text(encoding="utf-8"),
+        ]
+        for workflow in workflows:
+            self.assertNotIn("actions/checkout@v4", workflow)
+            self.assertRegex(workflow, r"actions/checkout@[0-9a-f]{40}\s+# v4")
+            self.assertIn("permissions:\n  contents: read", workflow)
+            self.assertIn("persist-credentials: false", workflow)
+        binary = workflows[1]
+        self.assertRegex(binary, r"actions/upload-artifact@[0-9a-f]{40}\s+# v4")
+        self.assertNotIn("Jimver/cuda-toolkit", binary)
+        self.assertIn("sha256:46a7128f65491ae6ed6e3a4ef31fc140", binary)
 
     def test_versions_and_upstream_pin_are_consistent(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
@@ -78,13 +85,18 @@ class ProjectMetadataTest(unittest.TestCase):
         self.assertIn(".p12", package_source)
         self.assertIn(".h3c", package_source)
         self.assertIn(".bf16", package_source)
+        self.assertIn('"dist"', package_source)
+        self.assertIn('".gz"', package_source)
+        self.assertIn('".onnx"', package_source)
 
         package = load_package_module()
         for artifact in (
                 Path("prompt.conditioning.h3c"),
                 Path("prompt.embedding.bf16"),
                 Path("models/checkpoint.safetensors"),
-                Path("models/checkpoint.gguf")):
+                Path("models/checkpoint.gguf"),
+                Path("models/checkpoint.onnx"),
+                Path("dist/h3cspeed-linux.tar.gz")):
             with self.subTest(artifact=artifact):
                 self.assertTrue(package.excluded(artifact))
 

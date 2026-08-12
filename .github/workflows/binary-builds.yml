@@ -1,0 +1,76 @@
+name: binary builds
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-22.04
+    container:
+      image: nvidia/cuda@sha256:46a7128f65491ae6ed6e3a4ef31fc140a4ca77d5dddb68a4350fea9d53a95c5f
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install build and runtime dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential clang git ninja-build pkg-config python3 python3-pip \
+            libicu-dev ffmpeg file binutils ca-certificates
+          printf '%s\n' \
+            'cmake==3.31.6 --hash=sha256:1c8b05df0602365da91ee6a3336fe57525b137706c4ab5675498f662ae1dbcec' \
+            >/tmp/cmake-requirements.txt
+          python3 -m pip install --no-cache-dir --only-binary=:all: \
+            --require-hashes -r /tmp/cmake-requirements.txt
+      - name: Verify release tag matches project version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$(cat VERSION)" ]; then
+            echo "tag $GITHUB_REF_NAME does not match VERSION $(cat VERSION)" >&2
+            exit 1
+          fi
+      - name: Build Linux CUDA executables
+        env:
+          H3CSPEED_CUDA_ARCHITECTURES: "86"
+        run: |
+          python3 scripts/bootstrap.py
+          cmake -S . -B build-binary -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=86 \
+            -DH3CSPEED_CUDA_ARCHITECTURES=86 \
+            -DH3CSPEED_ENABLE_TESTS=ON
+          cmake --build build-binary --parallel
+          ctest --test-dir build-binary --output-on-failure
+          cmake --install build-binary --prefix "$RUNNER_TEMP/install-linux"
+      - name: Package and verify Linux runtime
+        run: |
+          mkdir -p dist "$RUNNER_TEMP/verify-linux"
+          python3 scripts/package_runtime.py \
+            --install-dir "$RUNNER_TEMP/install-linux" \
+            --cuda-root /usr/local/cuda \
+            --platform linux-x86_64 \
+            --output "dist/h3cspeed-v$(cat VERSION)-linux-x86_64-cuda13.2-sm86.tar.gz"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/verify-linux"
+          bundle="$(find "$RUNNER_TEMP/verify-linux" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          "$bundle/bin/h3cspeed" --help >/tmp/h3-help.txt 2>&1
+          grep -q "Usage:" /tmp/h3-help.txt
+          LD_LIBRARY_PATH="$bundle/lib" ldd "$bundle/libexec/h3cspeed" | tee /tmp/h3-ldd.txt
+          ! grep -q "not found" /tmp/h3-ldd.txt
+          cuobjdump --dump-elf "$bundle/libexec/h3cspeed" >/tmp/h3-cuobjdump.txt
+          grep -q "sm_86" /tmp/h3-cuobjdump.txt
+          test -f "$bundle/licenses/NVIDIA-CUDA-EULA.txt"
+          test -f "$bundle/licenses/ICU-LICENSE.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: h3cspeed-linux-x86_64-cuda13.2-sm86
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30

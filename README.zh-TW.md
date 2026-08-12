@@ -97,6 +97,38 @@ cd <repo>
 原生 Windows 產物位於 `build-native\h3cspeed.exe` 與
 `build-native\h3cspeed-cuda-info.exe`；必要 ICU DLL 會自動複製到同一目錄。
 
+### 不含模型的跨平台執行檔
+
+runtime packager 支援兩種執行檔壓縮包：
+
+```text
+h3cspeed-v0.2.0-windows-x86_64-cuda13.2-sm86.zip
+h3cspeed-v0.2.0-linux-x86_64-cuda13.2-sm86.tar.gz
+```
+
+Windows 版本由本機 RTX 3070 Ti 驗收機建置與測試；固定版本的 `binary builds`
+GitHub Actions workflow 則在不可變 CUDA container 產生 Linux 版本。壓縮包
+包含 CLI、CUDA-info、啟動設定、SHA-256、授權文件，以及可再散布的
+CUDA／ICU runtime；不包含模型、`.h3c` conditioning sidecar 或輸出影片。
+主機仍需相容的 NVIDIA 驅動與 FFmpeg／FFprobe。Windows 另外需要 Microsoft
+Visual C++ 2015-2022 x64 Redistributable；Linux 採 Ubuntu 22.04 glibc 基線。
+
+解壓後可先測試：
+
+```powershell
+.\bin\h3cspeed.exe --help
+.\bin\h3cspeed-cuda-info.exe
+```
+
+```bash
+./bin/h3cspeed --help
+./bin/h3cspeed-cuda-info
+```
+
+Windows 壓縮包會在 RTX 3070 Ti 驗收機實跑；GitHub 的 Linux hosted runner
+沒有相容 GPU，因此它只證明 CUDA 編譯／連結、ELF 啟動、依賴閉包與內嵌
+`sm_86` 機器碼，不代表 Linux GPU 推理已 PASS。
+
 產生：
 
 ```text

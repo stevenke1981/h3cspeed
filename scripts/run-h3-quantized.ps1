@@ -108,6 +108,7 @@ function Resolve-H3Binary {
     # Prefer the quantized build, then the normal native and portable layouts.
     # These are repository-relative candidates, not host-specific defaults.
     $candidates = @(
+        (Join-Path $RepositoryRoot "bin\h3cspeed.exe"),
         (Join-Path $RepositoryRoot "build-quant\h3cspeed.exe"),
         (Join-Path $RepositoryRoot "build-native\h3cspeed.exe"),
         (Join-Path $RepositoryRoot "build\h3cspeed.exe"),

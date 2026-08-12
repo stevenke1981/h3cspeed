@@ -17,7 +17,7 @@ import zipfile
 EXCLUDED_PARTS = {
     ".git", ".idea", ".vscode", "__pycache__", ".pytest_cache",
     ".mypy_cache", ".ruff_cache", ".cache", "_deps", "outputs",
-    "third_party", "logs", "tmp", "temp",
+    "third_party", "logs", "tmp", "temp", "dist",
 }
 
 # Build directories are deliberately matched by prefix.  The native Windows
@@ -29,9 +29,10 @@ EXCLUDED_SUFFIXES = (
     ".a", ".bin", ".d", ".dll", ".dylib", ".exe", ".exp", ".gch",
     ".ilk", ".lib", ".map", ".o", ".obj", ".pch", ".pdb", ".so",
     ".wasm", ".dmp", ".log", ".trace",
-    ".mp4", ".mkv", ".mov", ".webm", ".zip", ".sha256", ".pyc",
+    ".mp4", ".mkv", ".mov", ".webm", ".zip", ".gz", ".sha256", ".pyc",
     ".h3c", ".bf16",
-    ".pyo", ".safetensors", ".gguf", ".ggml", ".pt", ".pth", ".ckpt",
+    ".pyo", ".safetensors", ".onnx", ".npy", ".npz",
+    ".gguf", ".ggml", ".pt", ".pth", ".ckpt",
     ".pem", ".secret", ".token", ".key", ".p12", ".pfx",
 )
 

@@ -61,6 +61,9 @@ class QuantizedWrapperStaticTests(unittest.TestCase):
         self.assertNotRegex(self.source, re.compile(r"[A-Za-z]:\\(?:Users|models|minimax-h3)", re.I))
         self.assertNotIn("/home/", self.source.lower())
 
+    def test_extracted_runtime_layout_is_auto_discovered(self) -> None:
+        self.assertIn('(Join-Path $RepositoryRoot "bin\\h3cspeed.exe")', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

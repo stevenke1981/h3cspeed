@@ -19,6 +19,9 @@
 # Local model/checkpoint payloads. The quantized-model preparer may create
 # hardlinks, so an accidentally repo-local output root must remain untracked.
 *.safetensors
+*.onnx
+*.npy
+*.npz
 *.gguf
 *.ggml
 *.pt
@@ -74,5 +77,8 @@ id_ed25519
 *.pfx
 
 # Archives/checksums created by scripts/package.py.
+/dist/
 *.zip
 *.zip.sha256
+*.tar.gz
+*.tar.gz.sha256

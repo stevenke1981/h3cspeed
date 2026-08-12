@@ -106,6 +106,41 @@ cd h3cspeed
 H3CSPEED_CUDA_ARCHITECTURES=86 ./scripts/build.sh
 ```
 
+### Model-free binary archives
+
+The runtime packager produces two executable archive formats:
+
+```text
+h3cspeed-v0.2.0-windows-x86_64-cuda13.2-sm86.zip
+h3cspeed-v0.2.0-linux-x86_64-cuda13.2-sm86.tar.gz
+```
+
+The Windows archive is built and tested on the local RTX 3070 Ti acceptance
+host. The pinned `binary builds` GitHub Actions workflow produces the Linux
+archive in an immutable CUDA container. The archives contain the CLI,
+CUDA-info utility, launch profiles, checksums, licenses
+and the redistributable CUDA/ICU runtime closure. They never contain model
+weights, `.h3c` conditioning sidecars or generated media. FFmpeg/FFprobe and a
+compatible NVIDIA driver remain host prerequisites. Windows also requires the
+Microsoft Visual C++ 2015-2022 x64 Redistributable; Linux uses an Ubuntu 22.04
+glibc baseline.
+
+After extraction, verify process startup with:
+
+```powershell
+.\bin\h3cspeed.exe --help
+.\bin\h3cspeed-cuda-info.exe
+```
+
+```bash
+./bin/h3cspeed --help
+./bin/h3cspeed-cuda-info
+```
+
+The Windows archive is runtime-tested on the RTX 3070 Ti acceptance host. The
+hosted Linux job has no compatible GPU, so it proves CUDA compilation/linking,
+ELF startup, dependency closure and embedded `sm_86` code—not Linux inference.
+
 The bootstrap step downloads and verifies this exact upstream revision:
 
 ```text

@@ -31,6 +31,13 @@
   falling back to PATH.
 - Clean PowerShell runtime with colocated ICU DLLs: CLI `--help` exit 0 and
   CUDA-info exit 0.
+- The model-free Windows CUDA 13.2 / `sm_86` runtime ZIP was extracted under a
+  path containing spaces and non-ASCII characters, then launched with PATH
+  restricted to the bundle `bin` plus Windows system directories. CLI
+  `--help` and CUDA-info both exited 0; CUDA-info identified the RTX 3070 Ti as
+  `sm_86`. Every internal manifest hash matched, forbidden model/sidecar/media
+  payload count was zero, and two independent packages were byte-for-byte
+  deterministic. Each final archive carries its own adjacent `.sha256` file.
 - CUDA 13.2 Compute Sanitizer memcheck on CUDA-info: 0 errors.
 - Pinned MiniMax-H3 FL2VA snapshot revision `939557dc319dd91227e30195a763f272ba7f8765`
   downloaded outside the source archive; all 81 pinned manifest paths passed
@@ -98,6 +105,10 @@ RAM/file transfer staging: 64 MiB
 - Complete-model resident-only versus offloaded parity remains separate from
   the passing focused converted-weight eviction/reload sanitizer test.
 - Newer-than-Ampere NVIDIA architecture validation.
+- Linux CUDA compilation, ELF startup and packaged dependency-closure evidence
+  are produced by the pinned hosted workflow. Linux GPU inference remains
+  unverified until the artifact is run on an `sm_86` Linux host; a hosted
+  CPU-only build is not counted as GPU runtime PASS.
 
 The source and native binaries are usable for CLI/model-directory workflows.
 The remaining parity, racecheck and newer-architecture gates must pass before
