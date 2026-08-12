@@ -95,12 +95,16 @@ def find_icu_license(root: Path) -> Path:
     raise RuntimeError("ICU license was not found")
 
 
-def find_cuda_eula(cuda: Path) -> Path:
-    candidates = (cuda / "EULA.txt", cuda.resolve() / "EULA.txt")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise RuntimeError(f"CUDA Toolkit EULA was not found below {cuda}")
+def cuda_license(root: Path) -> Path:
+    # Keep the exact CUDA 13.2 Toolkit EULA with the source. Attachment A
+    # explicitly lists cudart, cuBLAS and cuBLASLt as redistributable runtime
+    # components on Windows and Linux. A container-only license is not a
+    # substitute for a standalone binary archive.
+    license_path = root / "licenses/NVIDIA-CUDA-13.2-EULA.txt"
+    expected = "d56aa7762df57edd1a478cc47d85f804db40ed135b8270f4341c4a98a0796e90"
+    if not license_path.is_file() or sha256(license_path) != expected:
+        raise RuntimeError("pinned CUDA 13.2 Toolkit EULA is missing or modified")
+    return license_path
 
 
 def stage_windows(root: Path, install: Path, cuda: Path, bundle: Path) -> list[str]:
@@ -124,7 +128,8 @@ def stage_windows(root: Path, install: Path, cuda: Path, bundle: Path) -> list[s
         copy_file(library, output_bin / library.name)
 
     copy_file(find_icu_license(root), bundle / "licenses/ICU-LICENSE.txt")
-    copy_file(find_cuda_eula(cuda), bundle / "licenses/NVIDIA-CUDA-EULA.txt")
+    copy_file(cuda_license(root),
+              bundle / "licenses/NVIDIA-CUDA-LICENSE.txt")
     return list(runtime_names) + [item.name for item in cuda_libraries]
 
 
@@ -192,7 +197,8 @@ def stage_linux(root: Path, install: Path, cuda: Path, bundle: Path) -> list[str
         runtime.append(f"lib/{soname}")
 
     copy_file(find_icu_license(root), bundle / "licenses/ICU-LICENSE.txt")
-    copy_file(find_cuda_eula(cuda), bundle / "licenses/NVIDIA-CUDA-EULA.txt")
+    copy_file(cuda_license(root),
+              bundle / "licenses/NVIDIA-CUDA-LICENSE.txt")
     return runtime
 
 

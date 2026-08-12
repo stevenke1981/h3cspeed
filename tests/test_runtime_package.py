@@ -91,6 +91,22 @@ class RuntimePackageTest(unittest.TestCase):
         self.assertIn("Copyright (c) 2020 YaoYuan", yyjson)
         self.assertIn("Permission is hereby granted", yyjson)
 
+    def test_cuda_license_is_pinned_and_lists_bundled_components(self) -> None:
+        package = load_module()
+        license_path = package.cuda_license(ROOT)
+        text = license_path.read_text(encoding="utf-8")
+        self.assertIn("Attachment A", text)
+        self.assertIn("libcudart.so", text)
+        self.assertIn("libcublas.so", text)
+        self.assertIn("libcublasLt.so", text)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "licenses/NVIDIA-CUDA-13.2-EULA.txt"
+            target.parent.mkdir()
+            target.write_text("wrong license", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "missing or modified"):
+                package.cuda_license(root)
+
     def test_dirty_git_provenance_fails_closed_by_default(self) -> None:
         package = load_module()
         with mock.patch.object(

@@ -39,9 +39,11 @@ and a copy of the applicable ICU license under `licenses/`.
 
 Binary runtime archives may include the CUDA 13.2 cuBLAS and cuBLASLt runtime
 libraries required by the linked executable. They are redistributed under the
-NVIDIA CUDA Toolkit EULA, a copy of which is included in each such archive
-under `licenses/NVIDIA-CUDA-EULA.txt`. NVIDIA driver libraries are never
-bundled; a compatible host driver remains required.
+NVIDIA CUDA Toolkit 13.2 EULA. Attachment A lists the bundled Windows or
+Linux `cudart`, cuBLAS, and cuBLASLt runtime components as redistributable. An
+exact pinned copy is included under `licenses/NVIDIA-CUDA-LICENSE.txt`.
+NVIDIA driver libraries are never bundled; a compatible host driver remains
+required.
 
 ## llama.cpp / GGML
 
