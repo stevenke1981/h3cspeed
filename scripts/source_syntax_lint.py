@@ -228,19 +228,20 @@ typedef struct {
         }
         #endif
         """), encoding="utf-8")
-    (directory / "limits").write_text(textwrap.dedent(r"""\
-        #ifndef H3CSPEED_SYNTAX_LIMITS_H
-        #define H3CSPEED_SYNTAX_LIMITS_H
-        namespace std {
-        template <typename T>
-        struct numeric_limits {
-            static constexpr T max() {
-                return static_cast<T>((~static_cast<T>(0)) >> 1);
+    if os.name == "nt":
+        (directory / "limits").write_text(textwrap.dedent(r"""\
+            #ifndef H3CSPEED_SYNTAX_LIMITS_H
+            #define H3CSPEED_SYNTAX_LIMITS_H
+            namespace std {
+            template <typename T>
+            struct numeric_limits {
+                static constexpr T max() {
+                    return static_cast<T>((~static_cast<T>(0)) >> 1);
+                }
+            };
             }
-        };
-        }
-        #endif
-        """), encoding="utf-8")
+            #endif
+            """), encoding="utf-8")
     (directory / "cuda_bf16.h").write_text(textwrap.dedent(r"""\
         #ifndef CUDA_BF16_H
         #define CUDA_BF16_H
