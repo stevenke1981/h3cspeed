@@ -14,10 +14,6 @@ jobs:
     container:
       image: nvidia/cuda@sha256:46a7128f65491ae6ed6e3a4ef31fc140a4ca77d5dddb68a4350fea9d53a95c5f
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-          fetch-depth: 1
       - name: Install build and runtime dependencies
         run: |
           apt-get update
@@ -29,6 +25,13 @@ jobs:
             >/tmp/cmake-requirements.txt
           python3 -m pip install --no-cache-dir --only-binary=:all: \
             --require-hashes -r /tmp/cmake-requirements.txt
+      # The minimal CUDA image does not contain Git. Install it before checkout
+      # so actions/checkout creates a real repository instead of an archive-only
+      # REST fallback; runtime packages require verifiable clean-tree provenance.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
       - name: Verify release tag matches project version
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$(cat VERSION)" ]; then

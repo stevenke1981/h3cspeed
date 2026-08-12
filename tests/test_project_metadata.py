@@ -46,6 +46,12 @@ class ProjectMetadataTest(unittest.TestCase):
         self.assertRegex(binary, r"actions/upload-artifact@[0-9a-f]{40}\s+# v4")
         self.assertNotIn("Jimver/cuda-toolkit", binary)
         self.assertIn("sha256:46a7128f65491ae6ed6e3a4ef31fc140", binary)
+        self.assertLess(
+            binary.index("Install build and runtime dependencies"),
+            binary.index("actions/checkout@"),
+            "the minimal CUDA image must install Git before checkout so "
+            "runtime provenance has a real repository",
+        )
 
     def test_versions_and_upstream_pin_are_consistent(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
