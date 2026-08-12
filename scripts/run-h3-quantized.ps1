@@ -18,10 +18,13 @@ param(
     [int]$Steps = 20,
     [int]$Width = 256,
     [int]$Height = 256,
+    [int]$RenderWidth = 0,
+    [int]$RenderHeight = 0,
     [int]$Frames = 22,
     [int]$Layers = 50,
     [int]$Reuse = 1,
     [int]$CoreReuse = 1,
+    [UInt64]$Seed = 42,
     [string]$Device = "cuda:0",
     [string]$ComfyPython = "",
     [string]$BinaryPath = "",
@@ -136,30 +139,56 @@ function Restore-ProcessEnvironmentVariable {
 $exitCode = 2
 $oldSidecar = [Environment]::GetEnvironmentVariable("H3CSPEED_TEXT_EMBEDDING", "Process")
 $oldEncoderSha = [Environment]::GetEnvironmentVariable("H3CSPEED_TEXT_ENCODER_SHA256", "Process")
+$oldCudaDevice = [Environment]::GetEnvironmentVariable("H3_CUDA_DEVICE", "Process")
 
 try {
     if ([string]::IsNullOrWhiteSpace($Prompt)) {
         throw "Prompt must not be empty"
     }
-    if ($Steps -lt 1 -or $Steps -gt 100) {
-        throw "Steps must be between 1 and 100"
+    if ($Steps -lt 2 -or $Steps -gt 100) {
+        throw "Steps must be between 2 and 100"
     }
     if ($Width -lt 64 -or $Height -lt 64) {
         throw "Width and Height must be at least 64"
     }
-    if ($Frames -lt 22) {
-        throw "Frames must be at least the trained 22-frame decoder chunk"
+    if (($Width % 32) -ne 0 -or ($Height % 32) -ne 0) {
+        throw "Width and Height must be divisible by 32"
+    }
+    if ([int64]$Width * [int64]$Height -gt 768 * 1344) {
+        throw "Output canvas exceeds the released 768x1344 pixel limit"
+    }
+    if (($RenderWidth -eq 0) -xor ($RenderHeight -eq 0)) {
+        throw "RenderWidth and RenderHeight must be supplied together"
+    }
+    if ($RenderWidth -ne 0) {
+        if ($RenderWidth -lt 64 -or $RenderHeight -lt 64) {
+            throw "RenderWidth and RenderHeight must be at least 64"
+        }
+        if ($RenderWidth -gt $Width -or $RenderHeight -gt $Height) {
+            throw "Render dimensions must not exceed output dimensions"
+        }
+        if (($RenderWidth % 32) -ne 0 -or ($RenderHeight % 32) -ne 0) {
+            throw "RenderWidth and RenderHeight must be divisible by 32"
+        }
+        if (($RenderWidth * $Height) -ne ($RenderHeight * $Width)) {
+            throw "Render dimensions must preserve the output aspect ratio"
+        }
+    }
+    $effectiveRenderWidth = if ($RenderWidth -eq 0) { $Width } else { $RenderWidth }
+    $effectiveRenderHeight = if ($RenderHeight -eq 0) { $Height } else { $RenderHeight }
+    if ($Frames -lt 22 -or $Frames -gt 362 -or (($Frames - 5) % 17) -ne 0) {
+        throw "Frames must follow the released 5 + 17n layout within 22..362"
     }
     if ($Layers -lt 1 -or $Layers -gt 50) {
         throw "Layers must be between 1 and 50"
     }
-    if ($Reuse -lt 1 -or $CoreReuse -lt 1) {
-        throw "Reuse and CoreReuse must be positive"
+    if ($Reuse -lt 1 -or $Reuse -gt 3 -or $CoreReuse -lt 1 -or $CoreReuse -gt 6) {
+        throw "Reuse must be in 1..3 and CoreReuse must be in 1..6"
     }
     if ($Reuse -gt 1 -and $CoreReuse -gt 1) {
         throw "Reuse > 1 and CoreReuse > 1 cannot be combined"
     }
-    if ([string]::IsNullOrWhiteSpace($Device) -or -not $Device.StartsWith("cuda", [StringComparison]::OrdinalIgnoreCase)) {
+    if ([string]::IsNullOrWhiteSpace($Device) -or -not [regex]::IsMatch($Device, '^cuda(?::[0-9]+)?$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
         throw "Device must be a CUDA device (for example cuda:0); CPU fallback is forbidden"
     }
 
@@ -168,9 +197,9 @@ try {
     $encoder = Resolve-ExistingFile $TextEncoder "Quantized Qwen text encoder"
     $firstFrameSource = if ([string]::IsNullOrWhiteSpace($FirstFrame)) { $null } else { Resolve-ExistingFile $FirstFrame "First-frame image" }
     $lastFrameSource = if ([string]::IsNullOrWhiteSpace($LastFrame)) { $null } else { Resolve-ExistingFile $LastFrame "Last-frame image" }
-    $firstFrame = $firstFrameSource
-    $lastFrame = $lastFrameSource
-    if (($null -eq $firstFrame) -and ($null -eq $lastFrame)) {
+    $canonicalFirstFrame = $firstFrameSource
+    $canonicalLastFrame = $lastFrameSource
+    if (($null -eq $canonicalFirstFrame) -and ($null -eq $canonicalLastFrame)) {
         $mode = "t2v"
     } else {
         $mode = "fl2va-i2v"
@@ -203,11 +232,11 @@ try {
         "--prompt", $Prompt,
         "--device", $Device,
         "--mode", $mode,
-        "--width", $Width.ToString([Globalization.CultureInfo]::InvariantCulture),
-        "--height", $Height.ToString([Globalization.CultureInfo]::InvariantCulture)
+        "--width", $effectiveRenderWidth.ToString([Globalization.CultureInfo]::InvariantCulture),
+        "--height", $effectiveRenderHeight.ToString([Globalization.CultureInfo]::InvariantCulture)
     )
-    if ($null -ne $firstFrame) { $helperArguments += @("--first-frame", $firstFrame) }
-    if ($null -ne $lastFrame) { $helperArguments += @("--last-frame", $lastFrame) }
+    if ($null -ne $canonicalFirstFrame) { $helperArguments += @("--first-frame", $canonicalFirstFrame) }
+    if ($null -ne $canonicalLastFrame) { $helperArguments += @("--last-frame", $canonicalLastFrame) }
     Write-Host "[h3cspeed] generating GPU ComfyUI conditioning sidecar"
     $helperLines = @(& $python @helperArguments 2>&1 | ForEach-Object { $_.ToString() })
     $helperExitCode = $LASTEXITCODE
@@ -221,10 +250,10 @@ try {
         throw "conditioning helper succeeded but did not create sidecar: $sidecar"
     }
     if ($null -ne $firstFrameSource) {
-        $firstFrame = Resolve-ExistingFile "$sidecar.first.png" "Canonical first-frame image"
+        $canonicalFirstFrame = Resolve-ExistingFile "$sidecar.first.png" "Canonical first-frame image"
     }
     if ($null -ne $lastFrameSource) {
-        $lastFrame = Resolve-ExistingFile "$sidecar.last.png" "Canonical last-frame image"
+        $canonicalLastFrame = Resolve-ExistingFile "$sidecar.last.png" "Canonical last-frame image"
     }
 
     $reportedHashes = @(
@@ -246,6 +275,11 @@ try {
     # process-local and restore any caller values in finally.
     $env:H3CSPEED_TEXT_EMBEDDING = $sidecar
     $env:H3CSPEED_TEXT_ENCODER_SHA256 = $encoderHash
+    $env:H3_CUDA_DEVICE = if ($Device.Contains(":")) {
+        $Device.Substring($Device.IndexOf(":") + 1)
+    } else {
+        "0"
+    }
     $cliArguments = @(
         "-d", $modelRoot,
         "-p", $Prompt,
@@ -256,11 +290,26 @@ try {
         "--layers", $Layers.ToString([Globalization.CultureInfo]::InvariantCulture),
         "--reuse", $Reuse.ToString([Globalization.CultureInfo]::InvariantCulture),
         "--core-reuse", $CoreReuse.ToString([Globalization.CultureInfo]::InvariantCulture),
+        "--seed", $Seed.ToString([Globalization.CultureInfo]::InvariantCulture),
         "--ssd-streaming",
         "-o", $output
     )
-    if ($null -ne $firstFrame) { $cliArguments += @("--first-frame", $firstFrame) }
-    if ($null -ne $lastFrame) { $cliArguments += @("--last-frame", $lastFrame) }
+    if ($RenderWidth -ne 0) {
+        $cliArguments += @(
+            "--render-width", $RenderWidth.ToString([Globalization.CultureInfo]::InvariantCulture),
+            "--render-height", $RenderHeight.ToString([Globalization.CultureInfo]::InvariantCulture)
+        )
+    }
+    if ($null -ne $firstFrameSource) {
+        if ([string]::IsNullOrWhiteSpace($canonicalFirstFrame)) { throw "Canonical first-frame path is empty" }
+        $cliArguments += @("--first-frame", $canonicalFirstFrame)
+        Write-Host "[h3cspeed] native canonical first-frame: $canonicalFirstFrame"
+    }
+    if ($null -ne $lastFrameSource) {
+        if ([string]::IsNullOrWhiteSpace($canonicalLastFrame)) { throw "Canonical last-frame path is empty" }
+        $cliArguments += @("--last-frame", $canonicalLastFrame)
+        Write-Host "[h3cspeed] native canonical last-frame: $canonicalLastFrame"
+    }
     Write-Host "[h3cspeed] running hybrid Comfy-conditioned/native INT8 DiT path"
     & $binary @cliArguments
     $exitCode = $LASTEXITCODE
@@ -269,6 +318,7 @@ try {
 } finally {
     Restore-ProcessEnvironmentVariable "H3CSPEED_TEXT_EMBEDDING" $oldSidecar
     Restore-ProcessEnvironmentVariable "H3CSPEED_TEXT_ENCODER_SHA256" $oldEncoderSha
+    Restore-ProcessEnvironmentVariable "H3_CUDA_DEVICE" $oldCudaDevice
 }
 
 if ($exitCode -ne 0) {

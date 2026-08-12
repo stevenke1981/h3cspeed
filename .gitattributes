@@ -1,6 +1,9 @@
 # Shell/Python entrypoints must retain LF shebangs across Windows clones.
+.gitattributes text eol=lf
+SHA256SUMS text eol=lf
 *.sh text eol=lf
 *.py text eol=lf
+*.ps1 text eol=lf
 
 # Build metadata and documentation use stable text normalization.
 CMakeLists.txt text eol=lf

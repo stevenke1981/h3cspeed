@@ -98,6 +98,17 @@
   1,522.56 MiB peak resident and 12,582.55 MiB peak host memory, 73.33 GiB
   uploads, 70.40 GiB evictions and 22.70 GiB file fallback. This four-step run
   is a pipeline/semantic smoke, not the 20-step I2V quality baseline.
+- A second real FL2VA I2V + SageAttention wrapper smoke used the released
+  864x480 output and 288x160 internal-render geometry, 22 frames, two steps,
+  all 50 DiT layers and seed 4243 on the same RTX 3070 Ti / CUDA 13.2 host.
+  The wrapper passed its canonical first-frame path into the native process and
+  wrote a 484,093-byte H.264/AAC artifact with SHA-256
+  `A1EC7B50FD09199C22B2001BA21FCF2BE6A6FA869076DDB98FC05220636EE464`.
+  FFmpeg full decode exited 0; all 22 864x480 frames and 32 kHz stereo audio
+  decoded, and first/middle/final inspection preserved the preceding snowy-lake
+  fox subject without patch noise. Audio measured -54.69 dB RMS and -37.59 dB
+  peak. This remains a two-step continuity/geometry smoke, not a 20-step I2V
+  quality result or a completed sixty-second run.
 - The focused SageAttention benchmark used Windows 10 build 19045, RTX 3070 Ti
   8 GiB (`sm_86`), driver 596.36, CUDA 13.2 / nvcc 13.2.78, VS Build Tools
   18.6.0 (MSVC 14.51), Release architecture 86, B=1/H=56/N=800/D=128, two

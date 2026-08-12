@@ -268,8 +268,36 @@ keyframe path. A digest or geometry mismatch fails closed:
   -Prompt "A red fox walks through fresh snow in a pine forest." `
   -FirstFrame <first.png> -LastFrame <last.png> `
   -Output <i2v-output.mp4> -Steps 20 -Width 864 -Height 480 `
-  -Frames 124
+  -RenderWidth 288 -RenderHeight 160 -Frames 124 -Seed 4242
 ```
+
+### Resumable 60-second 480p generation
+
+The portable runtime also includes `scripts/run_h3_quantized_60s.py`. Its
+default plan generates twelve independently verified 124-frame clips: the
+first clip is T2V and each later clip is FL2VA I2V anchored to the preceding
+clip's last decoded frame. It uses 20 steps, all 50 DiT layers, SageAttention,
+SSD streaming, 864x480 output and a 288x160 internal render. Completed clips
+are content-hashed and resumable only when the prompt, model, executable and
+all generation parameters match. FFmpeg finally normalizes the 1,488 source
+frames to exactly 1,440 frames / 60 seconds at 24 fps with H.264 video and AAC
+32 kHz stereo audio.
+
+```powershell
+python scripts/run_h3_quantized_60s.py `
+  --model-root <prepared-root> `
+  --comfyui <ComfyUI-root> `
+  --text-encoder <Qwen-NVFP4-or-AWQ-safetensors> `
+  --prompt "A red fox walks through a snowy pine forest beside a frozen lake." `
+  --output-dir <outside-repo-output-directory>
+```
+
+Use `--stop-after 1` for the first 124-frame quality gate, then rerun the same
+command without it to resume. The script requires external `ffmpeg` and
+`ffprobe` plus the preparer's adjacent `manifest.json`; model weights, sidecars
+and generated media are never bundled.
+Twelve-segment continuity and the final exact-60-second artifact remain an
+acceptance result, not an implication of the shorter smoke tests above.
 
 After preparing the root, a short direct-native diagnostic run (experimental
 Qwen path, without the sidecar) is:

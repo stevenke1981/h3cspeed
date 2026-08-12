@@ -54,6 +54,11 @@
   DiT/VAE path with 20-step, 256x256, 22-frame defaults. Direct native
   BF16-Qwen decoding remains experimental; the wrapper is the usable semantic
   route for this quantized pack.
+- Added explicit internal-render geometry and deterministic seed forwarding to
+  the quantized wrapper. Added a cross-platform, resumable 60-second runner
+  that verifies twelve 124-frame T2V/FL2VA-I2V clips independently, binds
+  resume state to the prompt/model/binary/settings, and normalizes the final
+  output to exactly 1,440 frames at 24 fps.
 - Added static CPU-only wrapper checks. Real 4-step and 20-step sidecar runs
   exited 0, passed full decode and showed a recognizable fox; the 20-step
   artifact and measured offload telemetry are recorded in

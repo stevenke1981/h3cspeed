@@ -422,6 +422,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        args.device = args.device.lower()
+        device_parts = args.device.split(":", 1)
+        if (device_parts[0] != "cuda" or
+                (len(device_parts) == 2 and not device_parts[1].isdigit())):
+            raise SidecarError("device must be cuda or cuda:N; CPU fallback is forbidden")
         required = {
             "--comfyui": args.comfyui,
             "--text-encoder": args.text_encoder,

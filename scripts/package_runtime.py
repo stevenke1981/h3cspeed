@@ -32,6 +32,7 @@ COMMON_SCRIPTS = (
     "scripts/encode_h3_quantized_prompt.py",
     "scripts/prepare_h3_quantized_model.py",
     "scripts/run-h3-quantized.ps1",
+    "scripts/run_h3_quantized_60s.py",
     "scripts/run-3070ti-8gb.sh",
     "scripts/smoke-3070ti-8gb.sh",
     "scripts/fast-quality-3070ti-8gb.sh",

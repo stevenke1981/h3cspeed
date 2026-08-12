@@ -109,6 +109,11 @@ class QuantizedSidecarV2Tests(unittest.TestCase):
                     render_width=0, render_height=0,
                     image_hashes=[])
 
+    def test_device_is_normalized_and_cuda_only(self) -> None:
+        source = Path(sidecar.__file__).read_text(encoding="utf-8")
+        self.assertIn("args.device = args.device.lower()", source)
+        self.assertIn("device must be cuda or cuda:N", source)
+
 
 if __name__ == "__main__":
     unittest.main()

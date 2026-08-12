@@ -260,8 +260,33 @@ geometry 不一致會 fail-closed：
   -Prompt "A red fox walks through fresh snow in a pine forest." `
   -FirstFrame <first.png> -LastFrame <last.png> `
   -Output <i2v-output.mp4> -Steps 20 -Width 864 -Height 480 `
-  -Frames 124
+  -RenderWidth 288 -RenderHeight 160 -Frames 124 -Seed 4242
 ```
+
+### 可續跑的 60 秒 480p 生成
+
+Portable runtime 另附 `scripts/run_h3_quantized_60s.py`。預設會產生十二段、
+每段 124 幀且各自驗證：第一段為 T2V，後續每段以先前片段的最後一個解碼幀
+作為 FL2VA I2V first-frame。固定使用 20 steps、完整 50 層 DiT、
+SageAttention、SSD streaming、864×480 輸出與 288×160 內部 render。
+每個完成片段都有內容雜湊；只有 prompt、模型、執行檔與所有生成參數完全相同
+時才允許續跑。最後由 FFmpeg 把 1,488 個來源幀標準化成精確 1,440 幀／
+60 秒／24fps，視訊為 H.264，音訊為 AAC 32kHz stereo。
+
+```powershell
+python scripts/run_h3_quantized_60s.py `
+  --model-root <prepared-root> `
+  --comfyui <ComfyUI-root> `
+  --text-encoder <Qwen-NVFP4-or-AWQ-safetensors> `
+  --prompt "一隻紅狐狸沿結冰湖畔穿過覆雪松林，連續電影感跟拍。" `
+  --output-dir <repo-外的輸出目錄>
+```
+
+第一次可加 `--stop-after 1`，先完成 124 幀品質 gate；通過後用完全相同命令
+移除該參數即可續跑。腳本需要外部 `ffmpeg`／`ffprobe`，以及 preparer
+產生、位於模型根目錄旁的 `manifest.json`。模型權重、sidecar 與生成影片
+不會封裝進 portable 包。十二段的連續性與最終精確 60 秒成品仍須以實際長片
+驗收，不能由前述短 smoke 推論為 PASS。
 
 準備完成後，可先執行短版原生 diagnostic（experimental Qwen 路徑，不使用
 sidecar）：

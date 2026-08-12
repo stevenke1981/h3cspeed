@@ -26,6 +26,7 @@ class ProjectMetadataTest(unittest.TestCase):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         self.assertIn("*.sh text eol=lf", attributes)
         self.assertIn("*.py text eol=lf", attributes)
+        self.assertIn("*.ps1 text eol=lf", attributes)
 
     def test_native_build_rejects_shell_metacharacters_in_architectures(self) -> None:
         script = (ROOT / "scripts/build-native.ps1").read_text(encoding="utf-8")

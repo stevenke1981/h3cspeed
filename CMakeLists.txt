@@ -69,6 +69,8 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_3070ti_wrapper.py)
     add_test(NAME quantized_wrapper
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_quantized_wrapper.py)
+    add_test(NAME quantized_60s_runner
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_quantized_60s_runner.py)
     add_test(NAME runtime_package
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_package.py)
     message(STATUS "h3cspeed: configured portable overlay tests only")
@@ -434,6 +436,8 @@ if(H3CSPEED_ENABLE_TESTS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_3070ti_wrapper.py)
     add_test(NAME quantized_wrapper
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_quantized_wrapper.py)
+    add_test(NAME quantized_60s_runner
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_quantized_60s_runner.py)
     add_test(NAME runtime_package
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_package.py)
     if(WIN32)
