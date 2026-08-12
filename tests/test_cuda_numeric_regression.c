@@ -53,7 +53,10 @@ static int is_no_cuda_device_error(const char *error) {
     normalized[length] = '\0';
     return strstr(normalized, "no cuda-capable device") != NULL ||
            strstr(normalized, "cuda_error_no_device") != NULL ||
-           strstr(normalized, "cudaerrornodevice") != NULL;
+           strstr(normalized, "cudaerrornodevice") != NULL ||
+           strstr(normalized, "cuda driver version is insufficient") != NULL ||
+           strstr(normalized, "cuda_error_insufficient_driver") != NULL ||
+           strstr(normalized, "cudaerrorinsufficientdriver") != NULL;
 }
 
 static int test_layer_norm_centered(h3_gpu *gpu) {
