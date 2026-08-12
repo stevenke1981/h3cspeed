@@ -76,6 +76,25 @@ class ProjectMetadataTest(unittest.TestCase):
         self.assertIn(".netrc", package_source)
         self.assertIn("credentials.json", package_source)
         self.assertIn(".p12", package_source)
+        self.assertIn(".h3c", package_source)
+        self.assertIn(".bf16", package_source)
+
+        package = load_package_module()
+        for artifact in (
+                Path("prompt.conditioning.h3c"),
+                Path("prompt.embedding.bf16"),
+                Path("models/checkpoint.safetensors"),
+                Path("models/checkpoint.gguf")):
+            with self.subTest(artifact=artifact):
+                self.assertTrue(package.excluded(artifact))
+
+    def test_upstream_overlay_ships_its_mit_license(self) -> None:
+        license_path = ROOT / "licenses/antirez-h3.c-LICENSE"
+        notice = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        text = license_path.read_text(encoding="utf-8")
+        self.assertIn("Copyright (c) 2026 Salvatore Sanfilippo", text)
+        self.assertIn("Permission is hereby granted", text)
+        self.assertIn("licenses/antirez-h3.c-LICENSE", notice)
 
     def test_source_archive_preserves_script_execute_bits_on_windows(self) -> None:
         package = load_package_module()

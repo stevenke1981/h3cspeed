@@ -261,6 +261,28 @@ class LowVramBackendTest(unittest.TestCase):
         self.assertNotIn("--reuse 2", smoke)
         self.assertNotIn("--core-reuse 4", smoke)
 
+    def test_text_sidecar_branch_is_t2v_only_and_fail_closed(self) -> None:
+        source = (ROOT / "third_party/h3/h3.c").read_text(encoding="utf-8")
+        bootstrap = (ROOT / "scripts/bootstrap.py").read_text(encoding="utf-8")
+        self.assertIn('getenv("H3CSPEED_TEXT_EMBEDDING")', source)
+        self.assertIn('getenv("H3CSPEED_TEXT_ENCODER_SHA256")', source)
+        self.assertIn("h3_parse_sha256_hex", source)
+        self.assertIn("text_sidecar_sha256", source)
+        self.assertIn("64 hexadecimal", source)
+        self.assertIn("first/last frames and references are not allowed", source)
+        self.assertIn("h3cspeed_text_embedding_load_file", source)
+        self.assertIn("skipping native Qwen text encoder", source)
+        self.assertIn('h3_key_file(&key, "text-sidecar", sidecar)', source)
+        self.assertIn('"|text-sha=%s"', source)
+        self.assertIn("if (text_sidecar_path) h3_cache_clear(ctx);", source)
+        self.assertIn("patch_text_embedding_sidecar(root)", bootstrap)
+        sidecar_branch = source[source.index("int text_ok;"):source.index(
+            "conditioned = visual_count", source.index("int text_ok;"))]
+        self.assertIn("if (text_sidecar_path)", sidecar_branch)
+        self.assertIn("else {", sidecar_branch)
+        self.assertIn("h3_text_encode_bf16", sidecar_branch)
+        self.assertNotIn("h3_text_encode_bf16", sidecar_branch[:sidecar_branch.index("else {")])
+
 
 if __name__ == "__main__":
     unittest.main()

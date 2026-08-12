@@ -130,6 +130,104 @@ MiniMaxAI/MiniMax-H3
 
 本專案不宣稱此模型快照的授權；下載或使用前請查閱上游發佈條款。
 
+## 準備本機 ComfyUI 量化 T2V 模型包
+
+若本機 ComfyUI 已有四個 H3 檔案，可先用 header-only preparer 驗證並建立
+可攜式模型根目錄。它會檢查 FL2VA ConvRot INT8 marker（group size 256）、
+Qwen3-VL NVFP4 scale 與 `pre_quant_scale` alias、F16 video VAE、F32 audio
+VAE，以及每個 safetensors offset／size；不會讀取大型 payload。
+
+```powershell
+python scripts/prepare_h3_quantized_model.py --validate-only
+python scripts/prepare_h3_quantized_model.py
+```
+
+預設來源是 `E:\minimax-h3\ComfyUI\models`，小型 config／tokenizer 取自
+`E:\models\MiniMax-H3`，輸出到
+`E:\minimax-h3\ComfyUI\models\h3_t2v_quantized`。需要時可覆寫路徑：
+
+```powershell
+python scripts/prepare_h3_quantized_model.py `
+  --models-root E:\minimax-h3\ComfyUI\models `
+  --base-root E:\models\MiniMax-H3 `
+  --output-root E:\minimax-h3\ComfyUI\models\h3_t2v_quantized
+```
+
+四個大型 safetensors 只建立 hardlink，不會複製 payload。只有 allow-list
+內的小型 config／tokenizer 會複製到 `base/`，並在 `manifest.json` 記錄來源、
+大小、header hash、dtype 與 schema coverage。驗證失敗或輸出根目錄已存在時
+會 fail-closed；原生模型根目錄是 `h3_t2v_quantized/base`，保留
+`FL2VA/transformer`、`FL2VA/text_encoder`、`FL2VA/video_vae/source` 與
+`FL2VA/audio_vae`。請檢查 manifest 後再刪除或改用新的輸出目錄。
+
+四個 hardlink payload 合計 42,470,585,471 bytes（39.55 GiB）。原生 CUDA
+路徑會直接使用 FL2VA DiT 的 INT8 ConvRot 權重，對 activation 套用必要的
+online Hadamard rotation；Qwen 則依 blocked scale 與 activation-side
+`pre_quant_scale` 解碼 NVFP4/AWQ 權重，F16 video VAE 會在載入時轉換。
+Ampere（`sm_86`）上的 Qwen NVFP4 是 correctness／capacity 路徑，會
+materialize BF16 權重，並非原生 NVFP4 Tensor Core 執行。這個四檔模型根
+只包含 T2V／FL2VA，不含另一個 Ref2VA transformer。
+
+### ComfyUI CUDA conditioning bridge（量化模型建議路徑）
+
+目前原生 text encoder 會以 BF16 執行 Qwen。直接在 native runtime 解碼
+Qwen NVFP4/AWQ 雖然可以載入與執行，但仍標記為 experimental，不能當作此
+量化包的語意品質 gate。正式可用的路徑是讓本機 ComfyUI CUDA runtime 先
+編碼同一個 prompt，再把 prompt 綁定的 BF16 conditioning sidecar 交給
+native INT8 DiT／VAE。這個 bridge 是明確、GPU-only、純 T2V，不會靜默改用
+CPU，也不接受 Ref2VA 參考圖。
+
+Helper 會以 Comfy 的 tokenizer／Qwen CUDA 路徑產生 atomic sidecar，內容含
+prompt UTF-8、token ID／tag、BF16 conditioning，以及整個 Qwen 模型的
+SHA-256。直接呼叫時要使用提供的 ComfyUI virtual environment Python；
+wrapper 會自動尋找這個 Python：
+
+```powershell
+<ComfyUI-root>\.venv\Scripts\python.exe scripts/encode_h3_quantized_prompt.py `
+  --comfyui <ComfyUI-root> `
+  --text-encoder <Qwen-NVFP4-or-AWQ-safetensors> `
+  --output <cache-sidecar.h3c> `
+  --prompt "A red fox walks through fresh snow in a pine forest." `
+  --device cuda:0
+```
+
+Windows 一鍵 wrapper 會從提供的 ComfyUI root 或其上一層尋找 `.venv`／`venv`
+Python，也可用 `-ComfyPython` 與 `-BinaryPath` 明確指定。它先執行 helper 建立
+sidecar，再驗證 helper stdout 的 `model_sha256=` 與 `Get-FileHash` 一致，
+只對子程序設定 `H3CSPEED_TEXT_EMBEDDING`、
+`H3CSPEED_TEXT_ENCODER_SHA256`，最後還原呼叫端環境：
+
+```powershell
+.\scripts\run-h3-quantized.ps1 `
+  -ModelRoot <prepared-root> `
+  -ComfyUIRoot <ComfyUI-root> `
+  -TextEncoder <Qwen-NVFP4-or-AWQ-safetensors> `
+  -Prompt "A red fox walks through fresh snow in a pine forest." `
+  -Output <output.mp4> `
+  -Steps 20 -Width 256 -Height 256 -Frames 22
+```
+
+預設為 `20` steps、`256x256`、`22` frames；缺少路徑、非 CUDA device、
+helper／sidecar／SHA 驗證失敗、尺寸錯誤或 reuse 設定衝突，都會在 native
+程式啟動前 fail-closed。Sidecar 路徑已完成實機 4-step 與 20-step、exit 0、
+完整 decode 且可辨識狐狸的 smoke；20-step 的 H.264/AAC artifact 與量測記錄
+收錄於 `VALIDATION_RESULTS.md`，直接 native Qwen 仍維持 experimental。
+
+準備完成後，可先執行短版原生 diagnostic（experimental Qwen 路徑，不使用
+sidecar）：
+
+```powershell
+.\build\h3cspeed.exe `
+  -d E:\minimax-h3\ComfyUI\models\h3_t2v_quantized\base `
+  -p "A red fox walks through fresh snow in a pine forest." `
+  --width 256 --height 256 --frames 22 --steps 4 --layers 50 `
+  --reuse 1 --core-reuse 1 --ssd-streaming `
+  -o outputs\quantized-smoke.mp4
+```
+
+正式品質基準請保持相同 layers／reuse，改用 20 steps；4-step 只驗證
+管線與提示語意。
+
 ## 3. 最安全的第一個測試
 
 ```bash
@@ -283,15 +381,15 @@ watch -n 0.5 nvidia-smi
 
 ## 目前限制
 
-- 已在原生 Windows、CUDA 13.2、RTX 3070 Ti sm_86 使用固定版 FL2VA 模型
-  完成編譯、GPU 探測、完整 text-to-video pipeline，以及 FFmpeg
-  encode/probe/decode 驗收；固定 seed 的 256x256、22 frames 紅狐雪地松林提示
-  已同時通過 4-step 語意 diagnostic 與 20-step 正式品質驗收，20-step 輸出含
-  22 幀 H.264、AAC 非靜音音訊，且首／中／尾幀人工檢查符合提示；
+- BF16-Qwen baseline 已在原生 Windows、CUDA 13.2、RTX 3070 Ti sm_86
+  完成固定 seed 的 256x256、22 frames、20-step 紅狐雪地松林提示，並通過
+  H.264/AAC full decode、幀數、非靜音音訊與畫面檢查；量化四檔模型則以
+  Comfy CUDA conditioning bridge + native INT8 DiT／VAE 作為可用路徑；
 - offload 會大量使用 PCIe 與 RAM，速度一定比完整 VRAM 常駐慢；
 - attention 仍是 bounded-memory 參考核心，VAE convolution 尚未改用 cuDNN；
 - 尚未支援多 GPU與 CPU 計算 fallback；
 - 8GB 模式先用 256×256／22 frames 的 diagnostic smoke 確認可辨識輸出；
-  正式品質判定則使用 256×256／22 frames／20 steps／50 層，兩種 reuse 都為 1。
+  量化 sidecar 的 4-step 與 20-step 實機驗收均已通過；BF16 與量化正式
+  判定皆使用 256×256／22 frames／20 steps／50 層。
 
 下載封裝名稱：`h3cspeed-v0.2.0.zip`。

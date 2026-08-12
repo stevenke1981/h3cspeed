@@ -65,6 +65,8 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_low_vram_backend.py)
     add_test(NAME wrapper_profile
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_3070ti_wrapper.py)
+    add_test(NAME quantized_wrapper
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_quantized_wrapper.py)
     message(STATUS "h3cspeed: configured portable overlay tests only")
     return()
 endif()
@@ -154,6 +156,7 @@ set(H3CSPEED_CUDA_SOURCES
 
 add_library(h3cspeed_core STATIC
     ${H3_UPSTREAM_C}
+    src/h3_text_embedding_file.c
     src/h3_tokenizer_portable.c
     src/h3_resize_portable.c
     src/h3_offload_policy.c
@@ -301,11 +304,31 @@ if(H3CSPEED_ENABLE_TESTS)
     target_link_libraries(test_cuda_numeric_regression PRIVATE h3cspeed_core)
     set_target_properties(test_cuda_numeric_regression PROPERTIES
         LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    add_executable(test_cuda_convrot_numeric
+        tests/test_cuda_convrot_numeric.c)
+    target_include_directories(test_cuda_convrot_numeric PRIVATE
+        src "${H3CSPEED_H3_SOURCE_DIR}")
+    target_link_libraries(test_cuda_convrot_numeric PRIVATE h3cspeed_core)
+    set_target_properties(test_cuda_convrot_numeric PROPERTIES
+        LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    add_executable(test_cuda_nvfp4_numeric
+        tests/test_cuda_nvfp4_numeric.c)
+    target_include_directories(test_cuda_nvfp4_numeric PRIVATE
+        src "${H3CSPEED_H3_SOURCE_DIR}")
+    target_link_libraries(test_cuda_nvfp4_numeric PRIVATE h3cspeed_core)
+    set_target_properties(test_cuda_nvfp4_numeric PROPERTIES
+        LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
     add_executable(test_text_prompt_hash tests/test_text_prompt_hash.c)
     target_include_directories(test_text_prompt_hash PRIVATE
         "${H3CSPEED_H3_SOURCE_DIR}")
     target_link_libraries(test_text_prompt_hash PRIVATE h3cspeed_core)
     set_target_properties(test_text_prompt_hash PROPERTIES
+        LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    add_executable(test_text_embedding_file tests/test_text_embedding_file.c)
+    target_include_directories(test_text_embedding_file PRIVATE
+        src "${H3CSPEED_H3_SOURCE_DIR}")
+    target_link_libraries(test_text_embedding_file PRIVATE h3cspeed_core)
+    set_target_properties(test_text_embedding_file PROPERTIES
         LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
     if(WIN32)
         add_custom_command(TARGET test_text_prompt_hash POST_BUILD
@@ -330,9 +353,21 @@ if(H3CSPEED_ENABLE_TESTS)
             _CRT_SECURE_NO_WARNINGS)
         target_compile_options(test_cuda_numeric_regression PRIVATE
             /W4 /WX /permissive-)
+        target_compile_definitions(test_cuda_convrot_numeric PRIVATE
+            _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(test_cuda_convrot_numeric PRIVATE
+            /W4 /WX /permissive-)
+        target_compile_definitions(test_cuda_nvfp4_numeric PRIVATE
+            _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(test_cuda_nvfp4_numeric PRIVATE
+            /W4 /WX /permissive-)
         target_compile_definitions(test_text_prompt_hash PRIVATE
             _CRT_SECURE_NO_WARNINGS)
         target_compile_options(test_text_prompt_hash PRIVATE
+            /W4 /WX /permissive- /FI${CMAKE_CURRENT_SOURCE_DIR}/src/h3_msvc_compat.h)
+        target_compile_definitions(test_text_embedding_file PRIVATE
+            _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(test_text_embedding_file PRIVATE
             /W4 /WX /permissive- /FI${CMAKE_CURRENT_SOURCE_DIR}/src/h3_msvc_compat.h)
     else()
         target_compile_options(test_offload_policy PRIVATE
@@ -343,6 +378,12 @@ if(H3CSPEED_ENABLE_TESTS)
             -Wall -Wextra -Wpedantic -Werror)
         target_compile_options(test_cuda_numeric_regression PRIVATE
             -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(test_cuda_convrot_numeric PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(test_cuda_nvfp4_numeric PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(test_text_embedding_file PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
     endif()
     if(H3CSPEED_ENABLE_SANITIZERS)
         target_compile_options(test_resize PRIVATE -fsanitize=address,undefined)
@@ -351,9 +392,14 @@ if(H3CSPEED_ENABLE_TESTS)
     add_test(NAME portable_resize COMMAND test_resize)
     add_test(NAME offload_policy COMMAND test_offload_policy)
     add_test(NAME cuda_scale_add COMMAND test_cuda_scale_add)
+    add_test(NAME text_embedding_file COMMAND test_text_embedding_file)
     set_tests_properties(cuda_scale_add PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME cuda_numeric_regression COMMAND test_cuda_numeric_regression)
     set_tests_properties(cuda_numeric_regression PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME cuda_convrot_numeric COMMAND test_cuda_convrot_numeric)
+    set_tests_properties(cuda_convrot_numeric PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME cuda_nvfp4_numeric COMMAND test_cuda_nvfp4_numeric)
+    set_tests_properties(cuda_nvfp4_numeric PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME online_softmax_math
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_online_softmax.py)
     add_test(NAME alias_free_snake_math
@@ -368,6 +414,8 @@ if(H3CSPEED_ENABLE_TESTS)
             ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_low_vram_backend.py)
     add_test(NAME wrapper_profile
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_3070ti_wrapper.py)
+    add_test(NAME quantized_wrapper
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_quantized_wrapper.py)
     if(WIN32)
         add_executable(test_windows_child tests/test_windows_child.c)
         add_executable(test_windows_compat tests/test_windows_compat.c

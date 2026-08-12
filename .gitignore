@@ -14,6 +14,17 @@
 *.log
 *.trace
 *.dmp
+*.h3c
+
+# Local model/checkpoint payloads. The quantized-model preparer may create
+# hardlinks, so an accidentally repo-local output root must remain untracked.
+*.safetensors
+*.gguf
+*.ggml
+*.pt
+*.pth
+*.ckpt
+*.bf16
 
 # Native/compiler products (including Windows debug symbols).
 *.a

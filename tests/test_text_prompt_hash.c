@@ -2,6 +2,7 @@
 #include "h3_tokenizer.h"
 
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,13 @@ static uint64_t hash_bf16(const uint16_t *values, size_t count) {
         hash *= UINT64_C(1099511628211);
     }
     return hash;
+}
+
+static float bf16_to_f32(uint16_t value) {
+    uint32_t bits = (uint32_t)value << 16;
+    float result;
+    memcpy(&result, &bits, sizeof(result));
+    return result;
 }
 
 static void progress(int completed, int total, void *opaque) {
@@ -59,6 +67,28 @@ int main(int argc, char **argv) {
            (unsigned long long)hash_bf16(
                embedding.values, embedding.tokens * embedding.width),
            token_count);
+    double sum = 0.0, square_sum = 0.0;
+    float absolute_max = 0.0f;
+    size_t embedding_count = embedding.tokens * embedding.width;
+    for (size_t index = 0; index < embedding_count; index++) {
+        float value = bf16_to_f32(embedding.values[index]);
+        sum += value;
+        square_sum += (double)value * value;
+        if (fabsf(value) > absolute_max) absolute_max = fabsf(value);
+    }
+    double mean = embedding_count ? sum / (double)embedding_count : 0.0;
+    double variance = embedding_count ?
+        square_sum / (double)embedding_count - mean * mean : 0.0;
+    printf("prompt-stats mean=%.9g std=%.9g absmax=%.9g shape=%zux%zu\n",
+           mean, sqrt(variance > 0.0 ? variance : 0.0), absolute_max,
+           embedding.tokens, embedding.width);
+    const char *dump_path = getenv("H3_TEXT_DUMP");
+    if (dump_path && *dump_path) {
+        FILE *dump = fopen(dump_path, "wb");
+        if (!dump || fwrite(embedding.values, sizeof(*embedding.values),
+                            embedding_count, dump) != embedding_count ||
+            fclose(dump) != 0) fail("cannot write text embedding dump");
+    }
     h3_text_embedding_free(&embedding);
     h3_tokenizer_ids_free(ids);
     h3_tokenizer_free(tokenizer);

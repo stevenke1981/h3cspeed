@@ -40,6 +40,12 @@ struct h3_gpu_tensor {
     int host_valid;
     int host_pinned;
     int source_streaming;
+    /* Internal quantized-weight marker.  ConvRot weights were rotated offline
+     * with a normalized regular Hadamard matrix; the matching activation
+     * rotation is applied immediately before INT8 quantization.  This stays
+     * outside h3_gpu.h so the public backend ABI is unchanged. */
+    int convrot;
+    uint32_t convrot_group_size;
     int in_lru;
     int in_host_lru;
     uint64_t pin_epoch;

@@ -1,6 +1,6 @@
 # h3cspeed local validation results
 
-- Generated: 2026-08-12 (Asia/Taipei)
+- Generated: 2026-08-13 (Asia/Taipei)
 - Platform: native Windows x64
 - GPU: NVIDIA GeForce RTX 3070 Ti, CUDA `sm_86`, 8.00 GiB VRAM
 - System RAM: 31.81 GiB
@@ -12,14 +12,15 @@
 
 - Pinned upstream archive and prepared-tree hash verification, including a
   fresh forced bootstrap and post-patch verification.
-- Python bytecode checks and 24 Python tests (7 POSIX shell-launcher tests
-  skipped on native Windows).
+- Python bytecode checks and all focused Python suites (POSIX-only launcher
+  cases skip on native Windows).
 - Public CUDA backend API coverage: 103/103.
 - Windows Clang host syntax checks for all CUDA sources and portable C sources.
-- Portable overlay configure/build and CTest: 8/8.
+- Portable overlay configure/build and CTest: 9/9.
 - Native CUDA/MSVC build and link: `h3cspeed.exe`,
   `h3cspeed-cuda-info.exe`, library, and focused tests.
-- Native CTest: 12/12. This includes CUDA numeric-layout and scale-broadcast
+- Native CTest: 16/16. This includes CUDA numeric-layout, ConvRot, NVFP4,
+  converted-weight eviction/reload and scale-broadcast
   regressions, 64-bit `pread`/`stat` over a 5 GiB sparse
   file, POSIX spawn redirection, and real FFmpeg RGB+PCM encode, FFprobe, image
   decode, and audio decode. The FFmpeg test also reserves 48 CRT descriptors
@@ -55,6 +56,29 @@
   peaked at 2070.95 MiB device memory, and the video VAE peaked at 9245.04 MiB
   host memory. End-to-end wall time was approximately 46 minutes on the test
   machine.
+- The 39.55 GiB four-file ComfyUI T2V pack passed header/schema validation and
+  native loading on the same RTX 3070 Ti. Focused CUDA tests cover the FL2VA
+  INT8 ConvRot transform, contiguous Comfy Q/K/V layout, Qwen NVFP4 decoding,
+  F16/I8 conversion and repeated converted-weight eviction/reload under a
+  512 MiB VRAM budget. Compute Sanitizer memcheck reported 0 errors and
+  racecheck reported 0 hazards for both ConvRot and NVFP4 focused tests.
+- A real quantized 256x256, 22-frame, 4-step **Comfy-conditioned sidecar** smoke
+  exited 0 and completed all native INT8 DiT, Audio VAE, Video VAE and FFmpeg
+  stages. The H.264/AAC artifact passed full decode and visual inspection showed
+  a recognizable red fox in snowy pine woodland. The sidecar was produced by
+  the ComfyUI CUDA Qwen NVFP4/AWQ helper and validated by whole-model SHA-256
+  before native launch. Direct native BF16-Qwen decoding remains experimental
+  and is not this pack's semantic release gate.
+- A real quantized **Comfy-conditioned sidecar** 256x256, 22-frame, 20-step run
+  exited 0. The H.264/AAC MP4 is 82,341 bytes with SHA-256
+  `BAB9018C73E6394039B99EC3F9F37E0C064B88657B6CC4A700D1E516617D7F4B`;
+  full decode exited 0, audio decoded to 59,392 samples (mean -44.8 dB,
+  max -25.5 dB), and first/middle/final frames showed a clear red fox in
+  snowy pine woodland with no patch noise. DiT telemetry recorded 2,052.22 MiB
+  peak device memory, 13,244.45 MiB peak host memory, 360.68 GiB uploads,
+  357.75 GiB evictions and 100.56 GiB file fallback. The 11.241-second denoise
+  profile is kernel/compute time and excludes offload wait; it is not an
+  end-to-end wall-clock measurement.
 
 Observed low-VRAM policy on the acceptance machine:
 
@@ -71,8 +95,8 @@ RAM/file transfer staging: 64 MiB
 
 - Resident-only versus system-RAM/file-offloaded numerical parity for the
   complete model, plus a matched performance comparison, is still pending.
-- Compute Sanitizer racecheck of repeated file-backed and generated-INT8
-  eviction/reload cycles: requires the same model-level fixture.
+- Complete-model resident-only versus offloaded parity remains separate from
+  the passing focused converted-weight eviction/reload sanitizer test.
 - Newer-than-Ampere NVIDIA architecture validation.
 
 The source and native binaries are usable for CLI/model-directory workflows.

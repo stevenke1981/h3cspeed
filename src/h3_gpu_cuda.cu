@@ -1,8 +1,10 @@
 #include "h3_cuda_common.cuh"
+#include "h3_quantized_weights.h"
 
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cuda_fp16.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -30,6 +32,7 @@ static int environment_flag_enabled(const char *name) {
 
 static int read_exact(int descriptor, void *buffer, size_t bytes,
                       uint64_t offset, char *error, size_t error_size);
+static int convrot_group_valid(uint32_t group_size);
 
 static void lru_remove_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
     if (!gpu || !tensor || !tensor->in_lru) return;
@@ -1035,6 +1038,29 @@ extern "C" h3_gpu_tensor *h3_gpu_tensor_load_f32(h3_gpu *gpu,
         h3_gpu_tensor_free(tensor);
         tensor = nullptr;
     }
+    return tensor;
+}
+
+extern "C" h3_gpu_tensor *h3cspeed_gpu_tensor_load_i8_convrot(
+        h3_gpu *gpu, const char *path, uint64_t file_offset,
+        size_t elements, uint32_t group_size) {
+    if (!gpu || !path || !*path || !convrot_group_valid(group_size)) {
+        h3cspeed_set_error(gpu, "load ConvRot INT8 tensor",
+                           "invalid path or group size (expected 4^n <= 256)");
+        return nullptr;
+    }
+    h3_gpu_tensor *tensor = tensor_new_internal(
+        gpu, H3_GPU_I8, elements, gpu && !gpu->offload.enabled);
+    char error[512] = {0};
+    if (!tensor || !tensor_read_file(tensor, path, file_offset, elements,
+                                     0, 0, error, sizeof(error))) {
+        h3cspeed_set_error(gpu, "load ConvRot INT8 tensor",
+                           error[0] ? error : "tensor allocation failed");
+        h3_gpu_tensor_free(tensor);
+        return nullptr;
+    }
+    tensor->convrot = 1;
+    tensor->convrot_group_size = group_size;
     return tensor;
 }
 
@@ -2661,6 +2687,162 @@ __global__ static void quantize_rows_kernel(
     }
 }
 
+/* Apply the same regular Hadamard matrix used by comfy-kitchen ConvRot.
+ * The 4x4 seed is Kronecker-expanded (H4 ^ n) and every stage is normalized
+ * by 1/2, so a group of 4^n receives the orthogonal 1/sqrt(group) scaling.
+ * Keeping this as butterflies avoids a 256x256 matrix allocation per row. */
+__device__ static float *convrot_hadamard_group(float *values,
+                                                uint32_t group_size,
+                                                uint32_t lane) {
+    float *source = values;
+    float *destination = values + blockDim.x;
+    for (uint32_t stride = 1; stride < group_size; stride *= 4) {
+        if (lane < group_size) {
+            uint32_t block = (lane / (4u * stride)) * (4u * stride);
+            uint32_t offset = lane % stride;
+            uint32_t base = block + offset;
+            uint32_t which = (lane / stride) % 4u;
+            float a = source[base];
+            float b = source[base + stride];
+            float c = source[base + 2u * stride];
+            float d = source[base + 3u * stride];
+            float result;
+            switch (which) {
+                case 0: result = a + b + c - d; break;
+                case 1: result = a + b - c + d; break;
+                case 2: result = a - b + c + d; break;
+                default: result = -a + b + c + d; break;
+            }
+            destination[base + which * stride] = result * 0.5f;
+        }
+        __syncthreads();
+        float *temporary = source;
+        source = destination;
+        destination = temporary;
+    }
+    return source;
+}
+
+__device__ static size_t quantize_input_index(uint32_t row,
+                                               uint32_t column,
+                                               uint32_t width,
+                                               uint32_t rows,
+                                               int head_major,
+                                               uint32_t head_dim) {
+    if (!head_major) return (size_t)row * width + column;
+    uint32_t head = column / head_dim;
+    uint32_t dimension = column % head_dim;
+    return ((size_t)head * rows + (size_t)row) * head_dim + dimension;
+}
+
+/* ConvRot variant of row quantization.  Input is rotated in groups before the
+ * existing per-row INT8 scale/rounding boundary.  The weight marker is the
+ * only caller-visible selector; ordinary generated INT8 follows the legacy
+ * kernel byte-for-byte. */
+__global__ static void quantize_rows_convrot_kernel(
+        int8_t *output, float *scales, const void *input,
+        h3_gpu_dtype input_dtype, uint32_t rows, uint32_t width,
+        int head_major, uint32_t heads, uint32_t head_dim,
+        uint32_t group_size) {
+    uint32_t row = blockIdx.x;
+    if (row >= rows) return;
+    extern __shared__ float shared[];
+    uint32_t lane = threadIdx.x;
+    float maximum = 0.0f;
+    uint32_t groups = width / group_size;
+
+    /* First pass computes the row scale from x @ H, without materializing a
+     * rotated activation tensor. */
+    for (uint32_t group = 0; group < groups; group++) {
+        if (lane < group_size) {
+            uint32_t column = group * group_size + lane;
+            size_t index = quantize_input_index(row, column, width, rows,
+                                                head_major, head_dim);
+            shared[lane] = h3cspeed_device_load(input, input_dtype, index);
+        }
+        __syncthreads();
+        float *rotated = convrot_hadamard_group(shared, group_size, lane);
+        /* comfy-kitchen builds H in the activation dtype.  Its BF16 matmul
+         * therefore rounds the rotated activation once before INT8 max/round;
+         * mirror that boundary while retaining FP32 butterfly arithmetic. */
+        if (lane < group_size && input_dtype == H3_GPU_BF16)
+            rotated[lane] = __bfloat162float(__float2bfloat16_rn(rotated[lane]));
+        __syncthreads();
+        if (lane < group_size)
+            maximum = fmaxf(maximum, fabsf(rotated[lane]));
+        __syncthreads();
+    }
+    shared[lane] = maximum;
+    __syncthreads();
+    for (unsigned stride = blockDim.x / 2; stride; stride >>= 1) {
+        if (lane < stride)
+            shared[lane] = fmaxf(shared[lane], shared[lane + stride]);
+        __syncthreads();
+    }
+    float scale = shared[0] > 0.0f ? shared[0] / 127.0f : 1.0f;
+    if (lane == 0) scales[row] = scale;
+    __syncthreads();
+
+    /* Recompute the transform for the output pass.  This doubles reads but
+     * bounds temporary storage to one group and keeps low-VRAM behavior. */
+    float inverse = 1.0f / scale;
+    for (uint32_t group = 0; group < groups; group++) {
+        if (lane < group_size) {
+            uint32_t column = group * group_size + lane;
+            size_t index = quantize_input_index(row, column, width, rows,
+                                                head_major, head_dim);
+            shared[lane] = h3cspeed_device_load(input, input_dtype, index);
+        }
+        __syncthreads();
+        float *rotated = convrot_hadamard_group(shared, group_size, lane);
+        if (lane < group_size && input_dtype == H3_GPU_BF16)
+            rotated[lane] = __bfloat162float(__float2bfloat16_rn(rotated[lane]));
+        __syncthreads();
+        if (lane < group_size) {
+            float value = nearbyintf(rotated[lane] * inverse);
+            value = fminf(127.0f, fmaxf(-127.0f, value));
+            output[(size_t)row * width + group * group_size + lane] =
+                (int8_t)value;
+        }
+        __syncthreads();
+    }
+}
+
+static int convrot_group_valid(uint32_t group_size) {
+    if (group_size < 4 || group_size > 256) return 0;
+    /* ConvRot uses a Kronecker power of the 4x4 seed. */
+    while (group_size > 1) {
+        if (group_size % 4 != 0) return 0;
+        group_size /= 4;
+    }
+    return 1;
+}
+
+static int h3cspeed_quantize_rows_convrot(
+        h3_gpu *gpu, h3_gpu_tensor *quantized, h3_gpu_tensor *scales,
+        const h3_gpu_tensor *input, uint32_t rows, uint32_t width,
+        int head_major, uint32_t heads, uint32_t head_dim,
+        uint32_t group_size) {
+    if (!convrot_group_valid(group_size) || width % group_size != 0) {
+        h3cspeed_set_error(gpu, "ConvRot INT8 quantization",
+                           "group size must be a power of four <= 256 and divide input width");
+        return 0;
+    }
+    if (!gpu || !quantized || !scales || !input ||
+        quantized->dtype != H3_GPU_I8 || scales->dtype != H3_GPU_F32 ||
+        quantized->elements < (size_t)rows * width || scales->elements < rows ||
+        input->elements < (size_t)rows * width ||
+        (head_major && (uint64_t)heads * head_dim != width) ||
+        !h3cspeed_tensor_wait(gpu, input)) return 0;
+    quantize_rows_convrot_kernel<<<rows, 256, 512 * sizeof(float),
+                                   gpu->compute_stream>>>(
+        static_cast<int8_t *>(quantized->data),
+        static_cast<float *>(scales->data), input->data, input->dtype,
+        rows, width, head_major, heads, head_dim, group_size);
+    h3cspeed_count_direct(gpu);
+    return h3cspeed_launch_ok(gpu, "ConvRot row quantization CUDA kernel");
+}
+
 int h3cspeed_quantize_rows(h3_gpu *gpu, h3_gpu_tensor *quantized,
                            h3_gpu_tensor *scales, const h3_gpu_tensor *input,
                            uint32_t rows, uint32_t width, int head_major,
@@ -2817,11 +2999,16 @@ extern "C" int h3_gpu_linear_int8_bf16(
         uint32_t input_dim, uint32_t output_dim,
         int use_slower_uncached_int8_scales) {
     (void)use_slower_uncached_int8_scales;
-    return h3cspeed_quantize_rows(gpu, quantized_input, input_scales, input,
-                                 rows, input_dim, 0, 0, 0) &&
+    int quantized = weight && weight->convrot ?
+        h3cspeed_quantize_rows_convrot(
+            gpu, quantized_input, input_scales, input, rows, input_dim,
+            0, 0, 0, weight->convrot_group_size) :
+        h3cspeed_quantize_rows(gpu, quantized_input, input_scales, input,
+                               rows, input_dim, 0, 0, 0);
+    return quantized &&
            linear_int8_existing(gpu, output, quantized_input, input_scales,
-                                weight, weight_scales, rows, input_dim,
-                                output_dim);
+                                 weight, weight_scales, rows, input_dim,
+                                 output_dim);
 }
 
 extern "C" int h3_gpu_linear_int8_head_major_bf16(
@@ -2831,10 +3018,15 @@ extern "C" int h3_gpu_linear_int8_head_major_bf16(
         const h3_gpu_tensor *weight_scales, uint32_t rows,
         uint32_t heads, uint32_t head_dim, uint32_t output_dim) {
     uint32_t width = heads * head_dim;
-    return h3cspeed_quantize_rows(gpu, quantized_input, input_scales, input,
-                                 rows, width, 1, heads, head_dim) &&
+    int quantized = weight && weight->convrot ?
+        h3cspeed_quantize_rows_convrot(
+            gpu, quantized_input, input_scales, input, rows, width,
+            1, heads, head_dim, weight->convrot_group_size) :
+        h3cspeed_quantize_rows(gpu, quantized_input, input_scales, input,
+                               rows, width, 1, heads, head_dim);
+    return quantized &&
            linear_int8_existing(gpu, output, quantized_input, input_scales,
-                                weight, weight_scales, rows, width, output_dim);
+                                 weight, weight_scales, rows, width, output_dim);
 }
 
 extern "C" int h3_gpu_grouped_qkv_linear_rope_int8(
@@ -2858,11 +3050,22 @@ extern "C" int h3_gpu_grouped_qkv_linear_rope_int8(
     if (!qkv) return 0;
     int ok = h3_gpu_linear_int8_bf16(
                  gpu, qkv, quantized_input, input_scales, input, weight,
-                 weight_scales, rows, input_dim, qkv_dim, 0) &&
-             h3_gpu_grouped_qkv_rope_bf16(
-                 gpu, query, key, value, qkv, q_norm, k_norm,
-                 rope_cos, rope_sin, rows, heads, head_dim, rope_half,
-                 epsilon);
+                 weight_scales, rows, input_dim, qkv_dim, 0);
+    if (ok) {
+        /* Comfy checkpoints keep the projection rows as contiguous
+         * [Q-all, K-all, V-all].  The pinned upstream checkpoint uses the
+         * head-interleaved [head,Q,K,V] layout.  ConvRot is the fail-closed
+         * checkpoint marker that selects the Comfy layout. */
+        ok = weight->convrot ?
+            h3_gpu_qkv_rope_bf16(
+                gpu, query, key, value, qkv, q_norm, k_norm,
+                rope_cos, rope_sin, rows, heads, head_dim, rope_half,
+                epsilon) :
+            h3_gpu_grouped_qkv_rope_bf16(
+                gpu, query, key, value, qkv, q_norm, k_norm,
+                rope_cos, rope_sin, rows, heads, head_dim, rope_half,
+                epsilon);
+    }
     h3_gpu_tensor_free(qkv);
     return ok;
 }
@@ -3363,4 +3566,522 @@ extern "C" int h3_gpu_token_expand_adaln_bf16(
            h3_gpu_adaln_bf16(gpu, output, residual, norm_weight,
                              modulation, row_map, rows, width, slots,
                              shift_slot, scale_slot, epsilon);
+}
+
+/*
+ * Quantized-weight readers
+ * ------------------------
+ *
+ * These are deliberately kept as a vertical-slice implementation outside the
+ * public h3_gpu.h ABI.  The source files are read in bounded host chunks and
+ * every conversion is performed by a CUDA kernel; no path routes through a CPU
+ * GEMM.  A converted host backing copy is then retained for safe low-VRAM
+ * eviction and reload.
+ */
+
+static int quant_open_range(const char *path, uint64_t offset, size_t bytes,
+                            int *descriptor, char *error, size_t error_size) {
+    if (descriptor) *descriptor = -1;
+    if (!path || !*path || !descriptor) {
+        if (error && error_size) snprintf(error, error_size,
+                                          "quantized source path is required");
+        return 0;
+    }
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (error && error_size) snprintf(error, error_size,
+                                          "cannot open %s: %s", path,
+                                          strerror(errno));
+        return 0;
+    }
+    if (!validate_file_range(fd, path, offset, bytes, error, error_size)) {
+        close(fd);
+        return 0;
+    }
+    *descriptor = fd;
+    return 1;
+}
+
+static int quant_prepare_output(h3_gpu_tensor *destination, size_t elements,
+                                char *error, size_t error_size) {
+    if (!destination || !destination->gpu ||
+        (destination->dtype != H3_GPU_BF16 && destination->dtype != H3_GPU_F32) ||
+        destination->elements < elements) {
+        if (error && error_size) snprintf(error, error_size,
+                                          "quantized destination must be BF16/F32 and large enough");
+        return 0;
+    }
+    h3_gpu *gpu = destination->gpu;
+    if (destination->data) {
+        if (!h3cspeed_cuda_ok(gpu,
+                              cudaStreamSynchronize(gpu->compute_stream),
+                              "synchronize quantized destination")) return 0;
+    } else if (destination->bytes) {
+        pthread_mutex_lock(&gpu->offload_lock);
+        const int restoring_weight = destination->offloadable ? 1 : 0;
+        int ok = device_allocate_locked(gpu, &destination->data,
+                                        destination->bytes, restoring_weight,
+                                        destination);
+        pthread_mutex_unlock(&gpu->offload_lock);
+        if (!ok) {
+            if (error && error_size) snprintf(error, error_size, "%s",
+                                              h3_gpu_error(gpu));
+            return 0;
+        }
+    }
+    if (gpu->offload.enabled) {
+        pthread_mutex_lock(&gpu->offload_lock);
+        int ok = destination->host_data || host_backing_allocate_locked(
+            gpu, destination);
+        if (ok) {
+            destination->host_valid = 0;
+            pthread_mutex_lock(&destination->lock);
+            destination->ready_valid = 0;
+            destination->last_use_valid = 0;
+            pthread_mutex_unlock(&destination->lock);
+        }
+        pthread_mutex_unlock(&gpu->offload_lock);
+        if (!ok) {
+            if (error && error_size) snprintf(error, error_size,
+                                              "cannot allocate quantized host backing");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int quant_commit_output(h3_gpu_tensor *destination,
+                               char *error, size_t error_size) {
+    if (!destination || !destination->gpu || !destination->data) return 0;
+    h3_gpu *gpu = destination->gpu;
+    if (!h3cspeed_cuda_ok(gpu,
+                          cudaStreamSynchronize(gpu->compute_stream),
+                          "synchronize quantized conversion")) return 0;
+    if (gpu->offload.enabled && destination->host_data) {
+        if (!h3cspeed_cuda_ok(gpu,
+                              cudaMemcpy(destination->host_data,
+                                         destination->data, destination->bytes,
+                                         cudaMemcpyDeviceToHost),
+                              "save quantized host backing")) return 0;
+        pthread_mutex_lock(&gpu->offload_lock);
+        destination->host_valid = 1;
+        destination->source_bytes = destination->bytes;
+        destination->source_offset = 0;
+        destination->source_streaming = 0;
+        if (!destination->offloadable) {
+            destination->offloadable = 1;
+            destination->pin_epoch = 0;
+            gpu->resident_weight_bytes += destination->bytes;
+            gpu->peak_resident_weight_bytes = std::max(
+                gpu->peak_resident_weight_bytes,
+                gpu->resident_weight_bytes);
+        }
+        host_lru_append_locked(gpu, destination);
+        lru_append_locked(gpu, destination);
+        int ok = trim_offload_cache_locked(gpu);
+        pthread_mutex_unlock(&gpu->offload_lock);
+        if (!ok) {
+            if (error && error_size && !error[0])
+                snprintf(error, error_size, "%s", h3_gpu_error(gpu));
+            return 0;
+        }
+    }
+    if (error && error_size) error[0] = '\0';
+    return 1;
+}
+
+static h3_gpu_tensor *quant_temp_bytes(h3_gpu *gpu, size_t bytes) {
+    return tensor_new_internal(gpu, H3_GPU_I8, bytes, 1);
+}
+
+static int quant_copy_temp(h3_gpu *gpu, h3_gpu_tensor *temporary,
+                           const void *host, size_t bytes,
+                           char *error, size_t error_size) {
+    if (!temporary || temporary->bytes < bytes || !host) return 0;
+    if (!h3cspeed_cuda_ok(gpu,
+                          cudaMemcpyAsync(temporary->data, host, bytes,
+                                          cudaMemcpyHostToDevice,
+                                          gpu->upload_stream),
+                          "upload quantized source chunk") ||
+        !h3cspeed_cuda_ok(gpu,
+                          cudaStreamSynchronize(gpu->upload_stream),
+                          "synchronize quantized source chunk")) {
+        if (error && error_size && !error[0]) snprintf(error, error_size,
+                                                       "%s", h3_gpu_error(gpu));
+        return 0;
+    }
+    return 1;
+}
+
+__global__ static void quant_f16_to_output_kernel(
+        const uint16_t *source, void *destination, h3_gpu_dtype output_dtype,
+        size_t elements) {
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < elements; index += (size_t)gridDim.x * blockDim.x) {
+        float value = __half2float(__ushort_as_half(source[index]));
+        h3cspeed_device_store(destination, output_dtype, index, value);
+    }
+}
+
+__global__ static void quant_i8_to_bf16_kernel(
+        const int8_t *source, const float *scales, __nv_bfloat16 *destination,
+        uint32_t rows, uint32_t columns, uint32_t row_offset) {
+    size_t elements = (size_t)rows * columns;
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < elements; index += (size_t)gridDim.x * blockDim.x) {
+        uint32_t row = (uint32_t)(index / columns);
+        destination[(size_t)(row_offset + row) * columns + index % columns] =
+            __float2bfloat16_rn((float)source[index] * scales[row]);
+    }
+}
+
+__global__ static void quant_mul_bf16_kernel(
+        __nv_bfloat16 *output, const __nv_bfloat16 *input,
+        const __nv_bfloat16 *column_scale, uint32_t rows,
+        uint32_t columns) {
+    size_t elements = (size_t)rows * columns;
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < elements; index += (size_t)gridDim.x * blockDim.x) {
+        uint32_t column = (uint32_t)(index % columns);
+        float value = __bfloat162float(input[index]) *
+                      __bfloat162float(column_scale[column]);
+        output[index] = __float2bfloat16_rn(value);
+    }
+}
+
+extern "C" int h3cspeed_gpu_mul_bf16(
+        h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
+        const h3_gpu_tensor *column_scale, uint32_t rows, uint32_t columns) {
+    size_t elements = (size_t)rows * columns;
+    if (!gpu || !output || !input || !column_scale ||
+        output->dtype != H3_GPU_BF16 || input->dtype != H3_GPU_BF16 ||
+        column_scale->dtype != H3_GPU_BF16 || output->elements < elements ||
+        input->elements < elements || column_scale->elements < columns ||
+        !h3cspeed_tensor_wait(gpu, input) ||
+        !h3cspeed_tensor_wait(gpu, column_scale)) return 0;
+    quant_mul_bf16_kernel<<<h3cspeed_blocks(elements), 256, 0,
+                            gpu->compute_stream>>>(
+        static_cast<__nv_bfloat16 *>(output->data),
+        static_cast<const __nv_bfloat16 *>(input->data),
+        static_cast<const __nv_bfloat16 *>(column_scale->data), rows, columns);
+    h3cspeed_count_direct(gpu);
+    return h3cspeed_launch_ok(gpu, "BF16 column scale CUDA kernel");
+}
+
+__device__ static float nvfp4_e2m1_value(uint32_t value) {
+    constexpr float table[16] = {
+        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+       -0.0f,-0.5f,-1.0f,-1.5f,-2.0f,-3.0f,-4.0f,-6.0f};
+    return table[value & 15u];
+}
+
+__device__ static float nvfp4_e4m3_value(uint8_t bits) {
+    uint32_t sign = bits >> 7;
+    uint32_t exponent = (bits >> 3) & 15u;
+    uint32_t mantissa = bits & 7u;
+    float value;
+    if (exponent == 0) {
+        value = (float)mantissa * (1.0f / 8.0f) * (1.0f / 64.0f);
+    } else if (exponent == 15) {
+        /* E4M3FN reserves the all-ones mantissa as NaN.  Quantizers do not
+         * emit it for scales; treating it as zero is fail-closed. */
+        value = mantissa == 7u ? 0.0f :
+            (1.0f + (float)mantissa * (1.0f / 8.0f)) * 256.0f;
+    } else {
+        value = (1.0f + (float)mantissa * (1.0f / 8.0f)) *
+                exp2f((float)exponent - 7.0f);
+    }
+    return sign ? -value : value;
+}
+
+__device__ static size_t nvfp4_blocked_scale_index(
+        uint32_t row, uint32_t block, uint32_t blocks_per_row,
+        int blocked_layout) {
+    if (!blocked_layout) return (size_t)row * blocks_per_row + block;
+    uint32_t column_group = block / 4u;
+    uint32_t column_in_group = block & 3u;
+    uint32_t row_group = row / 128u;
+    uint32_t row_in_group = row & 127u;
+    uint32_t row32 = row_in_group & 31u;
+    uint32_t column4 = row_in_group / 32u;
+    uint32_t n_column_groups = (blocks_per_row + 3u) / 4u;
+    size_t tile = (size_t)row_group * n_column_groups + column_group;
+    return tile * 512u + (size_t)row32 * 16u +
+           (size_t)column4 * 4u + column_in_group;
+}
+
+__global__ static void quant_nvfp4_to_bf16_kernel(
+        const uint8_t *packed, const uint8_t *scales,
+        const __nv_bfloat16 *pre_scale, __nv_bfloat16 *destination,
+        uint32_t rows, uint32_t columns, uint32_t row_offset,
+        uint32_t blocks_per_row, uint32_t scale_rows, float tensor_scale,
+        int blocked_layout) {
+    size_t packed_columns = columns / 2u;
+    size_t elements = (size_t)rows * columns;
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < elements; index += (size_t)gridDim.x * blockDim.x) {
+        uint32_t row = (uint32_t)(index / columns);
+        uint32_t column = (uint32_t)(index % columns);
+        uint8_t packed_value = packed[(size_t)row * packed_columns + column / 2u];
+        uint32_t nibble = (column & 1u) ?
+            (uint32_t)(packed_value & 0x0fu) :
+            (uint32_t)(packed_value >> 4);
+        uint32_t block = column / 16u;
+        size_t scale_index = nvfp4_blocked_scale_index(
+            row + row_offset, block, blocks_per_row, blocked_layout);
+        /* Match Comfy-Kitchen's eager BF16 dequantization boundaries.  The
+         * global and block scales are first converted to BF16, their product
+         * is rounded to BF16, and the E2M1 value is applied with one final
+         * BF16 rounding.  Collapsing these operations into one F32 expression
+         * measurably changes real Qwen weights across fifty layers. */
+        float global_bf16 = __bfloat162float(__float2bfloat16_rn(tensor_scale));
+        float block_bf16 = __bfloat162float(
+            __float2bfloat16_rn(nvfp4_e4m3_value(scales[scale_index])));
+        float total_scale = __bfloat162float(
+            __float2bfloat16_rn(global_bf16 * block_bf16));
+        float value = nvfp4_e2m1_value(nibble) * total_scale;
+        if (pre_scale) value *= __bfloat162float(pre_scale[column]);
+        destination[(size_t)(row_offset + row) * columns + column] =
+            __float2bfloat16_rn(value);
+    }
+    (void)scale_rows;
+}
+
+static int quant_read_f16(h3_gpu_tensor *destination, const char *path,
+                          uint64_t file_offset, size_t elements,
+                          h3_gpu_dtype output_dtype, char *error,
+                          size_t error_size) {
+    if (!destination || !destination->gpu ||
+        (output_dtype != H3_GPU_BF16 && output_dtype != H3_GPU_F32) ||
+        destination->elements < elements ||
+        !quant_prepare_output(destination, elements, error, error_size)) return 0;
+    h3_gpu *gpu = destination->gpu;
+    size_t max_bytes = gpu->offload.staging_bytes ?
+        (size_t)gpu->offload.staging_bytes : 64u * 1024u * 1024u;
+    size_t max_elements = std::max((size_t)1, max_bytes / sizeof(uint16_t));
+    int descriptor = -1;
+    size_t source_bytes = 0;
+    if (!h3cspeed_size_mul(elements, sizeof(uint16_t), &source_bytes) ||
+        !quant_open_range(path, file_offset, source_bytes, &descriptor,
+                          error, error_size)) return 0;
+    h3_gpu_tensor *temporary = nullptr;
+    uint16_t *host = nullptr;
+    int ok = 1;
+    for (size_t offset = 0; ok && offset < elements;) {
+        size_t count = std::min(elements - offset, max_elements);
+        size_t bytes = count * sizeof(uint16_t);
+        host = static_cast<uint16_t *>(malloc(bytes));
+        temporary = quant_temp_bytes(gpu, bytes);
+        if (!host || !temporary ||
+            !read_exact(descriptor, host, bytes, file_offset + offset * 2,
+                        error, error_size) ||
+            !quant_copy_temp(gpu, temporary, host, bytes, error, error_size)) {
+            ok = 0;
+            break;
+        }
+        quant_f16_to_output_kernel<<<h3cspeed_blocks(count), 256, 0,
+                                     gpu->compute_stream>>>(
+            static_cast<const uint16_t *>(temporary->data),
+            static_cast<unsigned char *>(destination->data) +
+                offset * h3cspeed_dtype_size(output_dtype), output_dtype, count);
+        ok = h3cspeed_launch_ok(gpu, "F16 conversion kernel");
+        h3_gpu_tensor_free(temporary); temporary = nullptr;
+        free(host); host = nullptr;
+        offset += count;
+    }
+    if (temporary) h3_gpu_tensor_free(temporary);
+    free(host);
+    close(descriptor);
+    if (!ok || !quant_commit_output(destination, error, error_size)) return 0;
+    return 1;
+}
+
+extern "C" h3_gpu_tensor *h3cspeed_gpu_tensor_load_f16_as_bf16(
+        h3_gpu *gpu, const char *path, uint64_t file_offset, size_t elements) {
+    h3_gpu_tensor *tensor = tensor_new_internal(gpu, H3_GPU_BF16, elements,
+                                                 gpu && !gpu->offload.enabled);
+    char error[512] = {0};
+    if (tensor && !h3cspeed_gpu_tensor_read_f16_as_bf16(
+            tensor, path, file_offset, elements, error, sizeof(error))) {
+        h3cspeed_set_error(gpu, "load F16 as BF16", error);
+        h3_gpu_tensor_free(tensor);
+        tensor = nullptr;
+    }
+    return tensor;
+}
+
+extern "C" h3_gpu_tensor *h3cspeed_gpu_tensor_load_f16_as_f32(
+        h3_gpu *gpu, const char *path, uint64_t file_offset, size_t elements) {
+    h3_gpu_tensor *tensor = tensor_new_internal(gpu, H3_GPU_F32, elements,
+                                                 gpu && !gpu->offload.enabled);
+    char error[512] = {0};
+    if (tensor && !quant_read_f16(tensor, path, file_offset, elements,
+                                  H3_GPU_F32, error, sizeof(error))) {
+        h3cspeed_set_error(gpu, "load F16 as F32", error);
+        h3_gpu_tensor_free(tensor);
+        tensor = nullptr;
+    }
+    return tensor;
+}
+
+extern "C" int h3cspeed_gpu_tensor_read_f16_as_bf16(
+        h3_gpu_tensor *destination, const char *path, uint64_t file_offset,
+        size_t elements, char *error, size_t error_size) {
+    if (!destination || destination->dtype != H3_GPU_BF16) return 0;
+    return quant_read_f16(destination, path, file_offset, elements,
+                          H3_GPU_BF16, error, error_size);
+}
+
+extern "C" int h3cspeed_gpu_tensor_read_i8_as_bf16(
+        h3_gpu_tensor *destination, const char *weight_path,
+        uint64_t weight_offset, const char *scale_path, uint64_t scale_offset,
+        uint32_t rows, uint32_t columns, char *error, size_t error_size) {
+    size_t elements = 0, weight_bytes = 0, scale_bytes = 0;
+    if (!destination || destination->dtype != H3_GPU_BF16 ||
+        !h3cspeed_size_mul(rows, columns, &elements) ||
+        !h3cspeed_size_mul(elements, sizeof(int8_t), &weight_bytes) ||
+        !h3cspeed_size_mul(rows, sizeof(float), &scale_bytes) ||
+        destination->elements < elements ||
+        !quant_prepare_output(destination, elements, error, error_size)) return 0;
+    h3_gpu *gpu = destination->gpu;
+    int weight_fd = -1, scale_fd = -1;
+    if (!quant_open_range(weight_path, weight_offset, weight_bytes, &weight_fd,
+                          error, error_size) ||
+        !quant_open_range(scale_path, scale_offset, scale_bytes, &scale_fd,
+                          error, error_size)) {
+        if (weight_fd >= 0) close(weight_fd);
+        return 0;
+    }
+    size_t max_bytes = gpu->offload.staging_bytes ?
+        (size_t)gpu->offload.staging_bytes : 64u * 1024u * 1024u;
+    size_t rows_per_chunk = std::max((size_t)1, max_bytes / std::max((size_t)1,
+                                                                        (size_t)columns));
+    rows_per_chunk = std::min(rows_per_chunk, (size_t)rows);
+    size_t chunk_weight_bytes = rows_per_chunk * columns;
+    int8_t *host_weight = static_cast<int8_t *>(malloc(chunk_weight_bytes));
+    float *host_scale = static_cast<float *>(malloc(rows_per_chunk * sizeof(float)));
+    h3_gpu_tensor *weight_temp = quant_temp_bytes(gpu, chunk_weight_bytes);
+    h3_gpu_tensor *scale_temp = tensor_new_internal(
+        gpu, H3_GPU_F32, rows_per_chunk, 1);
+    int ok = host_weight && host_scale && weight_temp && scale_temp;
+    for (uint32_t row = 0; ok && row < rows; row += (uint32_t)rows_per_chunk) {
+        uint32_t count = (uint32_t)std::min((size_t)(rows - row), rows_per_chunk);
+        size_t bytes = (size_t)count * columns;
+        ok = read_exact(weight_fd, host_weight, bytes,
+                        weight_offset + (uint64_t)row * columns,
+                        error, error_size) &&
+             read_exact(scale_fd, host_scale, (size_t)count * sizeof(float),
+                        scale_offset + (uint64_t)row * sizeof(float),
+                        error, error_size) &&
+             quant_copy_temp(gpu, weight_temp, host_weight, bytes,
+                             error, error_size) &&
+             quant_copy_temp(gpu, scale_temp, host_scale,
+                             (size_t)count * sizeof(float), error, error_size);
+        if (ok) {
+            quant_i8_to_bf16_kernel<<<h3cspeed_blocks((size_t)count * columns),
+                                      256, 0, gpu->compute_stream>>>(
+                static_cast<const int8_t *>(weight_temp->data),
+                static_cast<const float *>(scale_temp->data),
+                static_cast<__nv_bfloat16 *>(destination->data), count,
+                columns, row);
+            ok = h3cspeed_launch_ok(gpu, "I8 dequantization kernel");
+        }
+    }
+    if (weight_temp) h3_gpu_tensor_free(weight_temp);
+    if (scale_temp) h3_gpu_tensor_free(scale_temp);
+    free(host_weight); free(host_scale);
+    close(weight_fd); close(scale_fd);
+    return ok && quant_commit_output(destination, error, error_size);
+}
+
+extern "C" int h3cspeed_gpu_tensor_read_nvfp4_as_bf16(
+        h3_gpu_tensor *destination, const char *packed_path,
+        uint64_t packed_offset, const char *scale_path, uint64_t scale_offset,
+        float tensor_scale, const char *pre_scale_path,
+        uint64_t pre_scale_offset, uint32_t rows, uint32_t columns,
+        char *error, size_t error_size) {
+    size_t elements = 0, packed_bytes = 0;
+    size_t blocks = ((size_t)columns + 15u) / 16u;
+    size_t scale_bytes = 0, pre_bytes = 0;
+    if (!destination || destination->dtype != H3_GPU_BF16 || !columns ||
+        (columns & 1u) || !h3cspeed_size_mul(rows, columns, &elements) ||
+        !h3cspeed_size_mul(rows, columns / 2u, &packed_bytes) ||
+        !h3cspeed_size_mul(rows, blocks, &scale_bytes) ||
+        !h3cspeed_size_mul(columns, sizeof(__nv_bfloat16), &pre_bytes) ||
+        destination->elements < elements ||
+        !quant_prepare_output(destination, elements, error, error_size)) return 0;
+    h3_gpu *gpu = destination->gpu;
+    int packed_fd = -1, scale_fd = -1, pre_fd = -1;
+    if (!quant_open_range(packed_path, packed_offset, packed_bytes, &packed_fd,
+                          error, error_size) ||
+        !quant_open_range(scale_path, scale_offset, scale_bytes, &scale_fd,
+                          error, error_size)) {
+        if (packed_fd >= 0) close(packed_fd);
+        return 0;
+    }
+    if (pre_scale_path && *pre_scale_path &&
+        !quant_open_range(pre_scale_path, pre_scale_offset, pre_bytes, &pre_fd,
+                          error, error_size)) {
+        close(packed_fd); close(scale_fd); return 0;
+    }
+    uint8_t *host_scale = static_cast<uint8_t *>(malloc(scale_bytes));
+    __nv_bfloat16 *host_pre = pre_fd >= 0 ?
+        static_cast<__nv_bfloat16 *>(malloc(pre_bytes)) : nullptr;
+    size_t max_bytes = gpu->offload.staging_bytes ?
+        (size_t)gpu->offload.staging_bytes : 64u * 1024u * 1024u;
+    size_t packed_row_bytes = columns / 2u;
+    size_t rows_per_chunk = std::max((size_t)1, max_bytes /
+                                               std::max((size_t)1, packed_row_bytes));
+    rows_per_chunk = std::min(rows_per_chunk, (size_t)rows);
+    size_t chunk_bytes = rows_per_chunk * packed_row_bytes;
+    uint8_t *host_packed = static_cast<uint8_t *>(malloc(chunk_bytes));
+    h3_gpu_tensor *packed_temp = quant_temp_bytes(gpu, chunk_bytes);
+    h3_gpu_tensor *scale_temp = quant_temp_bytes(gpu, scale_bytes);
+    h3_gpu_tensor *pre_temp = pre_fd >= 0 ?
+        tensor_new_internal(gpu, H3_GPU_BF16, columns, 1) : nullptr;
+    int ok = host_scale && host_packed && packed_temp && scale_temp &&
+             (pre_fd < 0 || (host_pre && pre_temp));
+    if (!ok && error && error_size && !error[0])
+        snprintf(error, error_size,
+                 "cannot allocate NVFP4 conversion staging buffers");
+    if (ok) ok = read_exact(scale_fd, host_scale, scale_bytes, scale_offset,
+                             error, error_size) &&
+                quant_copy_temp(gpu, scale_temp, host_scale, scale_bytes,
+                                error, error_size);
+    if (ok && pre_fd >= 0)
+        ok = read_exact(pre_fd, host_pre, pre_bytes, pre_scale_offset,
+                        error, error_size) &&
+             quant_copy_temp(gpu, pre_temp, host_pre, pre_bytes,
+                             error, error_size);
+    int blocked_layout = (rows % 128u == 0 && blocks % 4u == 0) ? 1 : 0;
+    for (uint32_t row = 0; ok && row < rows; row += (uint32_t)rows_per_chunk) {
+        uint32_t count = (uint32_t)std::min((size_t)(rows - row), rows_per_chunk);
+        size_t bytes = (size_t)count * packed_row_bytes;
+        ok = read_exact(packed_fd, host_packed, bytes,
+                        packed_offset + (uint64_t)row * packed_row_bytes,
+                        error, error_size) &&
+             quant_copy_temp(gpu, packed_temp, host_packed, bytes,
+                             error, error_size);
+        if (ok) {
+            quant_nvfp4_to_bf16_kernel<<<h3cspeed_blocks((size_t)count * columns),
+                                         256, 0, gpu->compute_stream>>>(
+                static_cast<const uint8_t *>(packed_temp->data),
+                static_cast<const uint8_t *>(scale_temp->data),
+                /* pre_quant_scale is applied to the activation by the Qwen
+                 * text encoder immediately before this weight is consumed.
+                 * Keep validating/loading the optional companion above, but
+                 * never fold it into the dequantized weight or it is applied
+                 * twice at runtime. */
+                nullptr,
+                static_cast<__nv_bfloat16 *>(destination->data), count, columns,
+                row, (uint32_t)blocks, rows, tensor_scale, blocked_layout);
+            ok = h3cspeed_launch_ok(gpu, "NVFP4 dequantization kernel");
+        }
+    }
+    if (packed_temp) h3_gpu_tensor_free(packed_temp);
+    if (scale_temp) h3_gpu_tensor_free(scale_temp);
+    if (pre_temp) h3_gpu_tensor_free(pre_temp);
+    free(host_packed); free(host_scale); free(host_pre);
+    close(packed_fd); close(scale_fd); if (pre_fd >= 0) close(pre_fd);
+    return ok && quant_commit_output(destination, error, error_size);
 }

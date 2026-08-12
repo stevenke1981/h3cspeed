@@ -152,6 +152,7 @@ typedef struct {
         extern "C" int cudaLaunch(const void *);
         extern __device__ float rsqrtf(float);
         extern __device__ float expf(float);
+        extern __device__ float exp2f(float);
         extern __device__ float sqrtf(float);
         extern __device__ float nearbyintf(float);
         extern __device__ float fminf(float, float);
@@ -208,6 +209,15 @@ typedef struct {
         cudaError_t cudaMemcpyAsync(void *, const void *, size_t, cudaMemcpyKind, cudaStream_t);
         cudaError_t cudaMemsetAsync(void *, int, size_t, cudaStream_t);
         }
+        #endif
+        """), encoding="utf-8")
+    (directory / "cuda_fp16.h").write_text(textwrap.dedent(r"""\
+        #ifndef CUDA_FP16_H
+        #define CUDA_FP16_H
+        #include <stdint.h>
+        struct __half { uint16_t bits; };
+        extern __device__ float __half2float(__half);
+        extern __device__ __half __ushort_as_half(uint16_t);
         #endif
         """), encoding="utf-8")
     # Clang's CUDA host wrapper otherwise pulls the installed MSVC STL and

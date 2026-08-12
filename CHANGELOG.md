@@ -26,13 +26,36 @@
 - Updated documentation and validation gates for WSL2, 8 GiB VRAM and 64–96 GiB
   system-memory configurations.
 - Completed native NVCC/CUDA 13.2 validation on an RTX 3070 Ti, including
-  12/12 focused CTest checks and a real 20-step, 22-frame H.264/AAC generation
+  16/16 focused CTest checks and a real 20-step, 22-frame H.264/AAC generation
   matching the red-fox/snowy-pine prompt.
 - Added an experimental 480p fast-quality preset using a 288×160 internal
   canvas and `--core-reuse 4`; its 124-frame / 5.167-second path completed with
   exit 0 and passed full decode plus visual prompt checks on the RTX 3070 Ti.
   The preset remains explicitly speed-oriented because internal-canvas
   upscaling introduces visible softness and mild horizontal ghosting.
+- Added native support for the 39.55 GiB four-file ComfyUI T2V pack: direct
+  FL2VA INT8 ConvRot weights, Qwen NVFP4/AWQ decoding with activation-side
+  pre-scales, F16 Video VAE conversion and F32 Audio VAE loading.
+- Added a header-only, fail-closed model preparer that validates the quantized
+  schemas and creates a native model root with hardlinks instead of copying the
+  39.55 GiB payload.
+- Added ConvRot, NVFP4, converted-weight eviction/reload and AdaLN curve
+  regressions while preserving the public CUDA API at 103/103.
+- Added an explicit ComfyUI CUDA conditioning bridge for the quantized pack.
+  `encode_h3_quantized_prompt.py` emits a prompt-bound BF16 sidecar with token
+  IDs/tags and a whole-Qwen SHA-256; the native runtime accepts it only through
+  `H3CSPEED_TEXT_EMBEDDING` plus `H3CSPEED_TEXT_ENCODER_SHA256`, and only for
+  pure T2V.
+- Added `scripts/run-h3-quantized.ps1`, a fail-closed Windows wrapper that
+  discovers or accepts the ComfyUI venv Python, verifies the helper-reported
+  model fingerprint against `Get-FileHash`, and launches the native INT8
+  DiT/VAE path with 20-step, 256x256, 22-frame defaults. Direct native
+  BF16-Qwen decoding remains experimental; the wrapper is the usable semantic
+  route for this quantized pack.
+- Added static CPU-only wrapper checks. Real 4-step and 20-step sidecar runs
+  exited 0, passed full decode and showed a recognizable fox; the 20-step
+  artifact and measured offload telemetry are recorded in
+  `VALIDATION_RESULTS.md`.
 
 ## 0.1.0 — engineering preview
 

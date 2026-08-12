@@ -24,7 +24,7 @@ UPSTREAM_REPO = "antirez/h3.c"
 UPSTREAM_COMMIT = "8974cc055ea9c02fcd14cc27dfda3e1027c05153"
 ARCHIVE_URL = f"https://github.com/{UPSTREAM_REPO}/archive/{UPSTREAM_COMMIT}.zip"
 ARCHIVE_SHA256 = "dc6d3cd25cb70d5c723292e60f3f3b9093688a731467008a691d9a7412d3e8f3"
-PREPARED_TREE_SHA256 = "e635847cdb045a0cb49aad8a6776488ab0fb9af4419e699b2536f528fce17973"
+PREPARED_TREE_SHA256 = "c9d8fd342cdc60dea1b68212ca4f54d85f39c1756f0fc2a03c8d569c0abd23d1"
 
 # Git blob SHA-1 values, not ordinary file hashes. They pin the exact interfaces
 # on which the CUDA overlay was developed.
@@ -58,21 +58,21 @@ EXPECTED_GIT_BLOBS = {
 # of the generated marker detects edited or stale prepared trees without a
 # network request on every configure.
 PREPARED_GIT_BLOBS: dict[str, str] = {
-    "h3.c": "3c0bf90029c883c7b27bb866e57096e6414bdbae",
+    "h3.c": "8e2a2870928882ad5e14c9ad3b6ee708e0840bf7",
     "h3.h": "29640b37abaa056341cf5e827ecc9df501ca7c5c",
     "h3_gpu.h": "7fb2871f0c7fca24c029fff80e1a135e06092a72",
     "h3_host.c": "6e875effe9dbe4294a3e35207806282decbad304",
     "h3_tokenizer.h": "e95e49b1d5149c445723d9552f6964917245a7de",
     "h3_tokenizer.m": "0d519fbd95c2728b2ab13a609695cfe311c626a7",
     "Makefile": "bb202379b4f30f997d9b168b6c0488cfe61d6946",
-    "h3_safetensors.c": "9efd975e33a2287c1b94f971b23edad7c99c7585",
-    "h3_weights.c": "9a0224dab1d009241f3a306b68740945c372b5ac",
-    "h3_text_encoder.c": "9c0e8fdb385f8017f0f476093c79c0f58569ba91",
-    "h3_dit_schedule.c": "cbc343d7cc9eb6e565d5f710b5d2ab5f2f5cabe6",
-    "h3_dit.c": "667e49b28eab928dcc34fbe0cee8ac67c2ddba1c",
+    "h3_safetensors.c": "2f1abd4202cbe854f0840c4db7acd2f2250ae46b",
+    "h3_weights.c": "a7321078b58e86bd87ad1f55192d818d81499bad",
+    "h3_text_encoder.c": "1089f0395f69b11f2327785de3c7aef291e85df7",
+    "h3_dit_schedule.c": "bbffd91d5615deebcc093d1c97c3392a043e5e0b",
+    "h3_dit.c": "980348657be5471fdeb50fee8e361618a4c96e26",
     "h3_video_vae.c": "149e11364384ebcbeb463f1140ff86400cd519ee",
     "h3_video_encoder.c": "f60a96d58e04f277fb1479122f1e528727e8b1b1",
-    "h3_audio_vae.c": "f563ae1d0188b2abe20721d54e8bc35c8978cb43",
+    "h3_audio_vae.c": "2eef6e2e3e85968f056c6d1da1691cdd036c23e5",
     "h3_ffmpeg.c": "66762425d2b2d8d166e867b7ddb96364d87976a9",
     "h3_terminal.c": "5b216e2e24ebf6468b80f4fd00332430240f16a3",
     "h3_vision_encoder.c": "8867231b3b88064ee01ee865ebaa30af53a5b5e3",
@@ -81,6 +81,8 @@ PREPARED_GIT_BLOBS: dict[str, str] = {
     "h3_cli.c": "79339c8237bd1bf61f6eabb58612b94e7655f25e",
     "linenoise.c": "2345b851b738d1106f5015b623a64a926a751216",
     "h3_metal.h": "c4fa79f06680c0d23012f4e500c46f1314561cb0",
+    "h3_safetensors.h": "90335175f84b7d48349783c06fd044f0b4306981",
+    "h3_weights.h": "f73d3766797e1ee7c871a24225d2af273092ed14",
 }
 
 
@@ -212,6 +214,113 @@ def patch_windows_stat(root: Path) -> None:
                            encoding="utf-8", newline="\n")
 
 
+def patch_text_embedding_sidecar(root: Path) -> None:
+    """Add the explicit text sidecar bridge to h3.c."""
+    path = root / "h3.c"
+    text = path.read_text(encoding="utf-8")
+    include_marker = '#include "h3_text_embedding_file.h"\n'
+    if include_marker not in text:
+        include = '#include "h3_text_encoder.h"\n'
+        if include not in text:
+            raise RuntimeError("unable to locate h3 text encoder include")
+        text = text.replace(include, include + include_marker, 1)
+    if "h3_parse_sha256_hex" not in text:
+        include = '#include "h3_text_embedding_file.h"\n'
+        helper = '''
+static int h3_parse_sha256_hex(const char *text, uint8_t output[32]) {
+    if (!text || strlen(text) != 64) return 0;
+    for (size_t index = 0; index < 32; index++) {
+        unsigned value = 0;
+        for (unsigned nibble = 0; nibble < 2; nibble++) {
+            unsigned char digit = (unsigned char)text[index * 2 + nibble];
+            if (digit >= '0' && digit <= '9') value = (value << 4) + digit - '0';
+            else if (digit >= 'a' && digit <= 'f') value = (value << 4) + digit - 'a' + 10u;
+            else if (digit >= 'A' && digit <= 'F') value = (value << 4) + digit - 'A' + 10u;
+            else return 0;
+        }
+        output[index] = (uint8_t)value;
+    }
+    return 1;
+}
+'''
+        text = text.replace(include, include + helper, 1)
+    if "text-sidecar" not in text:
+        old = ("    if (!h3_key_append(&key, \"mode=%d|prompt=%zu:%s\", ref2va,\n"
+               "                       strlen(prompt), prompt)) goto failed;\n"
+               "    if (!ref2va && !params->first_frame && !params->last_frame) return key.text;")
+        new = ("    if (!h3_key_append(&key, \"mode=%d|prompt=%zu:%s\", ref2va,\n"
+               "                       strlen(prompt), prompt)) goto failed;\n"
+               "    /* Keep the explicit sidecar path and stat in the cache key. */\n"
+               "    const char *sidecar = getenv(\"H3CSPEED_TEXT_EMBEDDING\");\n"
+               "    if (sidecar && !h3_key_file(&key, \"text-sidecar\", sidecar)) goto failed;\n"
+               "    if (sidecar && !h3_key_append(&key, \"|text-sha=%s\",\n"
+               "                                  getenv(\"H3CSPEED_TEXT_ENCODER_SHA256\") ?\n"
+               "                                  getenv(\"H3CSPEED_TEXT_ENCODER_SHA256\") :\n"
+               "                                  \"missing\")) goto failed;\n"
+               "    if (!ref2va && !params->first_frame && !params->last_frame) return key.text;")
+        if old not in text:
+            raise RuntimeError("unable to locate h3 conditioning cache key")
+        text = text.replace(old, new, 1)
+    if 'const char *text_sidecar_path = getenv("H3CSPEED_TEXT_EMBEDDING");' not in text:
+        old = ("    int ref2va = params->reference_count != 0;\n"
+               "    if (ref2va && !ctx->model.ref2va_transformer.files) {")
+        new = ("    int ref2va = params->reference_count != 0;\n"
+               "    const char *text_sidecar_path = getenv(\"H3CSPEED_TEXT_EMBEDDING\");\n"
+               "    uint8_t text_sidecar_sha256[32];\n"
+               "    if (text_sidecar_path &&\n"
+               "        (ref2va || params->first_frame || params->last_frame)) {\n"
+               "        h3_set_error(ctx,\n"
+               "            \"H3CSPEED_TEXT_EMBEDDING is supported only for pure T2V; \"\n"
+               "            \"first/last frames and references are not allowed\");\n"
+               "        return NULL;\n"
+               "    }\n"
+               "    if (text_sidecar_path &&\n"
+               "        !h3_parse_sha256_hex(getenv(\"H3CSPEED_TEXT_ENCODER_SHA256\"),\n"
+               "                             text_sidecar_sha256)) {\n"
+               "        h3_set_error(ctx,\n"
+               "            \"H3CSPEED_TEXT_ENCODER_SHA256 must be exactly 64 hexadecimal \"\n"
+               "            \"characters when H3CSPEED_TEXT_EMBEDDING is set\");\n"
+               "        return NULL;\n"
+               "    }\n"
+               "    /* Never reuse conditioning/prepared caches across a mutable sidecar. */\n"
+               "    if (text_sidecar_path) h3_cache_clear(ctx);\n"
+               "    if (ref2va && !ctx->model.ref2va_transformer.files) {")
+        if old not in text:
+            raise RuntimeError("unable to locate h3 generation mode check")
+        text = text.replace(old, new, 1)
+    if "skipping native Qwen text encoder" not in text:
+        old = ("        if (!h3_text_encode_bf16(\n"
+               "                text_path, \"h3_shaders.metal\", ids, token_count,\n"
+               "                h3_text_progress_bridge, &progress, &text,\n"
+               "                detail, sizeof(detail))) {\n"
+               "            h3_set_error(ctx, \"%s\", detail);\n"
+               "            goto cleanup;\n"
+               "        }")
+        new = ("        int text_ok;\n"
+               "        if (text_sidecar_path) {\n"
+               "            fprintf(stderr,\n"
+               "                \"h3: using text sidecar %s; skipping native Qwen text encoder\\n\",\n"
+               "                text_sidecar_path);\n"
+               "            text_ok = h3cspeed_text_embedding_load_file(\n"
+               "                text_sidecar_path, prompt, ids, token_count,\n"
+               "                text_sidecar_sha256, &text,\n"
+               "                detail, sizeof(detail));\n"
+               "        } else {\n"
+               "            text_ok = h3_text_encode_bf16(\n"
+               "                text_path, \"h3_shaders.metal\", ids, token_count,\n"
+               "                h3_text_progress_bridge, &progress, &text,\n"
+               "                detail, sizeof(detail));\n"
+               "        }\n"
+               "        if (!text_ok) {\n"
+               "            h3_set_error(ctx, \"%s\", detail);\n"
+               "            goto cleanup;\n"
+               "        }")
+        if old not in text:
+            raise RuntimeError("unable to locate h3 pure-T2V text encoder call")
+        text = text.replace(old, new, 1)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def patch_c_linkage(path: Path, include_marker: str) -> None:
     text = path.read_text(encoding="utf-8")
     opening = '#ifdef __cplusplus\nextern "C" {\n#endif\n\n'
@@ -228,10 +337,37 @@ def patch_c_linkage(path: Path, include_marker: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def patch_quantized_loader(root: Path) -> None:
+    """Apply the audited quantized-loader overlay reproducibly.
+
+    The source files remain pinned upstream inputs.  Their prepared variants
+    are copied from versioned overlay templates so a fresh bootstrap cannot
+    silently diverge from the tree used by the CUDA build and tests.
+    """
+    overlay = Path(__file__).resolve().parent / "upstream_overlay"
+    files = (
+        "h3_safetensors.h",
+        "h3_safetensors.c",
+        "h3_weights.h",
+        "h3_weights.c",
+        "h3_text_encoder.c",
+        "h3_dit.c",
+        "h3_dit_schedule.c",
+        "h3_audio_vae.c",
+    )
+    for relative in files:
+        source = overlay / relative
+        if not source.is_file():
+            raise RuntimeError(f"quantized overlay is missing {relative}")
+        shutil.copyfile(source, root / relative)
+
+
 def patch_tree(root: Path) -> None:
     replace_host_resize(root / "h3_host.c")
     patch_cli_name(root)
     patch_windows_stat(root)
+    patch_text_embedding_sidecar(root)
+    patch_quantized_loader(root)
     patch_c_linkage(root / "h3_gpu.h", "#include <stdint.h>\n\n")
     patch_c_linkage(root / "h3_metal.h", '#include "h3.h"\n\n')
     marker = root / ".h3cspeed-pinned-revision"

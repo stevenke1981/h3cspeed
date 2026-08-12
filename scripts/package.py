@@ -30,6 +30,7 @@ EXCLUDED_SUFFIXES = (
     ".ilk", ".lib", ".map", ".o", ".obj", ".pch", ".pdb", ".so",
     ".wasm", ".dmp", ".log", ".trace",
     ".mp4", ".mkv", ".mov", ".webm", ".zip", ".sha256", ".pyc",
+    ".h3c", ".bf16",
     ".pyo", ".safetensors", ".gguf", ".ggml", ".pt", ".pth", ".ckpt",
     ".pem", ".secret", ".token", ".key", ".p12", ".pfx",
 )

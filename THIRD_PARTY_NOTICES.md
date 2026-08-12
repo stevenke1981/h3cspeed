@@ -3,8 +3,9 @@
 ## antirez/h3.c
 
 `h3cspeed` downloads a pinned copy of `antirez/h3.c` during bootstrap. Those
-files are distributed under their upstream MIT license. The bootstrap process
-retains upstream `LICENSE` and `THIRD_PARTY_NOTICES.md` inside
+files and the versioned source overlay are distributed under their upstream
+MIT license. The complete upstream license is included at
+`licenses/antirez-h3.c-LICENSE`; bootstrap also retains upstream notices inside
 `third_party/h3`.
 
 Pinned revision:

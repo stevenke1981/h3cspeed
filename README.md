@@ -49,11 +49,13 @@ This archive is an engineering preview. The pinned `h3_gpu.h` surface remains
 fully covered at 103/103 functions. Portable tests, policy tests, source syntax,
 metadata checks and deterministic packaging are included. Native Windows CUDA
 13.2 compilation, focused kernel execution and the complete text-to-video
-pipeline have run on an RTX 3070 Ti 8 GiB with the pinned FL2VA model. A fixed
-seed, 256x256, 22-frame acceptance prompt produced a semantically matching red
-fox in a snowy pine forest at both four and 20 steps. The 20-step output passed
-H.264/AAC full-decode, frame-count, non-silent audio and visual inspection; the
-four-step command remains a diagnostic rather than the quality baseline.
+pipeline have run on an RTX 3070 Ti 8 GiB with the pinned FL2VA model. The
+BF16-Qwen baseline produced a semantically matching red fox in a snowy pine
+forest at 256x256, 22 frames and 20 steps, and its H.264/AAC output passed full
+decode, frame-count, non-silent-audio and visual inspection. The quantized
+four-file pack has a separate acceptance path described below: direct native
+BF16-Qwen decoding remains experimental, while the hybrid Comfy-conditioned /
+native INT8 DiT route is the usable T2V path.
 
 ## Requirements
 
@@ -121,6 +123,112 @@ MiniMaxAI/MiniMax-H3
 
 This project does not assert a license for the model snapshot; review the
 upstream distribution terms before downloading or using it.
+
+## Prepare the local ComfyUI quantized T2V pack
+
+When the local ComfyUI checkout already contains the four H3 files, the
+header-only preparer validates their schema before staging a portable model
+root. It checks FL2VA ConvRot INT8 markers (group size 256), Qwen3-VL NVFP4
+scales and `pre_quant_scale` aliases, the F16 video VAE, the F32 audio VAE,
+and every safetensors offset/size without reading the large payloads.
+
+```powershell
+python scripts/prepare_h3_quantized_model.py --validate-only
+python scripts/prepare_h3_quantized_model.py
+```
+
+The defaults target `E:\minimax-h3\ComfyUI\models`, use the small
+configuration/tokenizer files under `E:\models\MiniMax-H3`, and create
+`E:\minimax-h3\ComfyUI\models\h3_t2v_quantized`. Override the locations when
+needed:
+
+```powershell
+python scripts/prepare_h3_quantized_model.py `
+  --models-root E:\minimax-h3\ComfyUI\models `
+  --base-root E:\models\MiniMax-H3 `
+  --output-root E:\minimax-h3\ComfyUI\models\h3_t2v_quantized
+```
+
+The four large safetensors files are hardlinks, never copies. Only an
+allow-listed set of small config/tokenizer files is copied below `base/`, and
+`manifest.json` records source paths, sizes, header hashes, dtypes and schema
+coverage. The command fails closed if validation fails or the output root
+already exists; remove or choose a new output root only after reviewing the
+manifest. The native model root is `h3_t2v_quantized/base` and retains the
+`FL2VA/transformer`, `FL2VA/text_encoder`, `FL2VA/video_vae/source` and
+`FL2VA/audio_vae` component directories.
+
+The four linked payloads total 42,470,585,471 bytes (39.55 GiB). The native
+CUDA path uses the FL2VA DiT's INT8 ConvRot weights directly, applies the
+required online Hadamard rotation to activations, decodes the Qwen NVFP4/AWQ
+weights with their blocked scales and activation-side `pre_quant_scale`, and
+converts the F16 video VAE at load time. On Ampere (`sm_86`), Qwen NVFP4 is a
+correctness/capacity path that materializes BF16 weights; it is not native
+NVFP4 Tensor Core execution. This four-file root is T2V/FL2VA only and does not
+include the separate Ref2VA transformer.
+
+### ComfyUI CUDA conditioning bridge (recommended quantized path)
+
+The native text encoder currently executes Qwen in BF16. Its direct NVFP4/AWQ
+decoder is therefore marked experimental: it loads and runs, but is not the
+semantic quality gate for this pack. For a usable quantized run, let the local
+ComfyUI CUDA runtime encode the exact prompt, then pass its prompt-bound BF16
+conditioning sidecar to the native INT8 DiT/VAE runtime. The bridge is explicit,
+GPU-only and pure T2V; it never silently falls back to CPU or accepts Ref2VA
+references.
+
+The helper writes an atomic sidecar containing the prompt bytes, Comfy token
+IDs/tags, BF16 conditioning and the whole Qwen model SHA-256. Invoke it with
+the Python executable from the supplied ComfyUI virtual environment (the
+wrapper performs this discovery automatically):
+
+```powershell
+<ComfyUI-root>\.venv\Scripts\python.exe scripts/encode_h3_quantized_prompt.py `
+  --comfyui <ComfyUI-root> `
+  --text-encoder <Qwen-NVFP4-or-AWQ-safetensors> `
+  --output <cache-sidecar.h3c> `
+  --prompt "A red fox walks through fresh snow in a pine forest." `
+  --device cuda:0
+```
+
+For one command, the Windows wrapper discovers a `.venv`/`venv` Python below
+the supplied ComfyUI root (or its parent) and the repository-relative native
+build, or accepts `-ComfyPython` and `-BinaryPath` explicitly. It creates the cache sidecar first, validates the
+helper's `model_sha256=` against `Get-FileHash`, sets
+`H3CSPEED_TEXT_EMBEDDING` and `H3CSPEED_TEXT_ENCODER_SHA256` only for the child
+process, then restores the caller's environment:
+
+```powershell
+.\scripts\run-h3-quantized.ps1 `
+  -ModelRoot <prepared-root> `
+  -ComfyUIRoot <ComfyUI-root> `
+  -TextEncoder <Qwen-NVFP4-or-AWQ-safetensors> `
+  -Prompt "A red fox walks through fresh snow in a pine forest." `
+  -Output <output.mp4> `
+  -Steps 20 -Width 256 -Height 256 -Frames 22
+```
+
+The wrapper defaults are `20` denoising steps, `256x256` and `22` frames. It
+fails closed on missing roots, a non-CUDA device, helper failure, sidecar
+absence, SHA mismatch, invalid dimensions or incompatible reuse settings. The
+sidecar route has passed real 4-step and 20-step exit-0/full-decode smokes with
+a recognizable fox. The 20-step 256x256/22-frame H.264/AAC artifact is recorded
+in `VALIDATION_RESULTS.md`; direct native Qwen remains experimental.
+
+After preparing the root, a short direct-native diagnostic run (experimental
+Qwen path, without the sidecar) is:
+
+```powershell
+.\build\h3cspeed.exe `
+  -d E:\minimax-h3\ComfyUI\models\h3_t2v_quantized\base `
+  -p "A red fox walks through fresh snow in a pine forest." `
+  --width 256 --height 256 --frames 22 --steps 4 --layers 50 `
+  --reuse 1 --core-reuse 1 --ssd-streaming `
+  -o outputs\quantized-smoke.mp4
+```
+
+Use 20 steps with the same layers/reuse settings for the quality baseline;
+the 4-step command is only a pipeline and semantic diagnostic.
 
 Inspect the selected memory policy before loading the model:
 
