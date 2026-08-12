@@ -262,8 +262,22 @@ class LowVramBackendTest(unittest.TestCase):
         self.assertNotIn("--core-reuse 4", smoke)
 
     def test_text_sidecar_branch_is_t2v_only_and_fail_closed(self) -> None:
-        source = (ROOT / "third_party/h3/h3.c").read_text(encoding="utf-8")
         bootstrap = (ROOT / "scripts/bootstrap.py").read_text(encoding="utf-8")
+        prepared = ROOT / "third_party/h3/h3.c"
+        if not prepared.is_file():
+            # Public clones intentionally omit the prepared upstream tree. The
+            # bootstrap patch is the authoritative source in overlay-only CI.
+            for marker in (
+                    "H3CSPEED_TEXT_EMBEDDING",
+                    "H3CSPEED_TEXT_ENCODER_SHA256",
+                    "h3_parse_sha256_hex",
+                    "h3cspeed_text_embedding_load_file",
+                    "skipping native Qwen text encoder",
+                    "h3_cache_clear(ctx)"):
+                self.assertIn(marker, bootstrap)
+            self.assertIn("patch_text_embedding_sidecar(root)", bootstrap)
+            return
+        source = prepared.read_text(encoding="utf-8")
         self.assertIn('getenv("H3CSPEED_TEXT_EMBEDDING")', source)
         self.assertIn('getenv("H3CSPEED_TEXT_ENCODER_SHA256")', source)
         self.assertIn("h3_parse_sha256_hex", source)
