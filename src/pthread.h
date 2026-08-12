@@ -55,6 +55,9 @@ static inline int pthread_join(pthread_t thread, void **result) {
     CloseHandle(thread); return 0;
 }
 #else
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC system_header
+#endif
 #include_next <pthread.h>
 #endif
 #endif

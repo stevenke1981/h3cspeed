@@ -70,6 +70,9 @@ static inline int closedir(DIR *directory) {
     FindClose(directory->handle); free(directory->pattern); free(directory); return 0;
 }
 #else
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC system_header
+#endif
 #include_next <dirent.h>
 #endif
 #endif

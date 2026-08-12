@@ -55,6 +55,9 @@ int h3cspeed_posix_spawnp(pid_t *pid, const char *file,
                           char *const envp[]);
 #define posix_spawnp h3cspeed_posix_spawnp
 #else
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC system_header
+#endif
 #include_next <spawn.h>
 #endif
 #endif

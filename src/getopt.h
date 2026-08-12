@@ -53,6 +53,9 @@ static inline int h3cspeed_getopt_long(int argc, char *const argv[],
 }
 #define getopt_long h3cspeed_getopt_long
 #else
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC system_header
+#endif
 #include_next <getopt.h>
 #endif
 #endif

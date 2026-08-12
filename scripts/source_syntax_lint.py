@@ -213,21 +213,22 @@ typedef struct {
     # Clang's CUDA host wrapper otherwise pulls the installed MSVC STL and
     # its compiler-specific intrinsic headers.  The kernels only need these
     # two comparisons, so keep the syntax check declaration-only and portable.
-    (directory / "algorithm").write_text(textwrap.dedent(r"""\
-        #ifndef H3CSPEED_SYNTAX_ALGORITHM_H
-        #define H3CSPEED_SYNTAX_ALGORITHM_H
-        namespace std {
-        template <typename T>
-        constexpr const T &max(const T &left, const T &right) {
-            return left < right ? right : left;
-        }
-        template <typename T>
-        constexpr const T &min(const T &left, const T &right) {
-            return right < left ? right : left;
-        }
-        }
-        #endif
-        """), encoding="utf-8")
+    if os.name == "nt":
+        (directory / "algorithm").write_text(textwrap.dedent(r"""\
+            #ifndef H3CSPEED_SYNTAX_ALGORITHM_H
+            #define H3CSPEED_SYNTAX_ALGORITHM_H
+            namespace std {
+            template <typename T>
+            constexpr const T &max(const T &left, const T &right) {
+                return left < right ? right : left;
+            }
+            template <typename T>
+            constexpr const T &min(const T &left, const T &right) {
+                return right < left ? right : left;
+            }
+            }
+            #endif
+            """), encoding="utf-8")
     if os.name == "nt":
         (directory / "limits").write_text(textwrap.dedent(r"""\
             #ifndef H3CSPEED_SYNTAX_LIMITS_H

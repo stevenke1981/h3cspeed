@@ -24,6 +24,9 @@ static inline int h3cspeed_strncasecmp(const char *left, const char *right, size
 #define strcasecmp h3cspeed_strcasecmp
 #define strncasecmp h3cspeed_strncasecmp
 #else
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC system_header
+#endif
 #include_next <strings.h>
 #endif
 #endif

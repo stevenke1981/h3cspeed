@@ -20,6 +20,9 @@ static inline intptr_t h3cspeed_waitpid(intptr_t pid, int *status, int options) 
 #define WIFEXITED(status) 1
 #define WEXITSTATUS(status) (((status) >> 8) & 0xff)
 #else
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC system_header
+#endif
 #include_next <sys/wait.h>
 #endif
 #endif
