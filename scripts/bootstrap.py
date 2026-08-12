@@ -24,7 +24,7 @@ UPSTREAM_REPO = "antirez/h3.c"
 UPSTREAM_COMMIT = "8974cc055ea9c02fcd14cc27dfda3e1027c05153"
 ARCHIVE_URL = f"https://github.com/{UPSTREAM_REPO}/archive/{UPSTREAM_COMMIT}.zip"
 ARCHIVE_SHA256 = "dc6d3cd25cb70d5c723292e60f3f3b9093688a731467008a691d9a7412d3e8f3"
-PREPARED_TREE_SHA256 = "72b21049757828c659a1da26ffa440df76942d8e7453f8648a0598408399f432"
+PREPARED_TREE_SHA256 = "e7fa928f76ae68dd321ba3a2c4d263657af32c560b6dab4ccaf7928c7110c476"
 
 # Git blob SHA-1 values, not ordinary file hashes. They pin the exact interfaces
 # on which the CUDA overlay was developed.
@@ -73,7 +73,7 @@ PREPARED_GIT_BLOBS: dict[str, str] = {
     "h3_video_vae.c": "149e11364384ebcbeb463f1140ff86400cd519ee",
     "h3_video_encoder.c": "f60a96d58e04f277fb1479122f1e528727e8b1b1",
     "h3_audio_vae.c": "2eef6e2e3e85968f056c6d1da1691cdd036c23e5",
-    "h3_ffmpeg.c": "66762425d2b2d8d166e867b7ddb96364d87976a9",
+    "h3_ffmpeg.c": "b051cf185be1ae8e415a4024b526c1bf685cfbef",
     "h3_terminal.c": "5b216e2e24ebf6468b80f4fd00332430240f16a3",
     "h3_vision_encoder.c": "8867231b3b88064ee01ee865ebaa30af53a5b5e3",
     "h3_multimodal.c": "f7b25455865b6fe937b0e2f08c72770e3d39e96d",
@@ -213,6 +213,18 @@ def patch_windows_stat(root: Path) -> None:
         raise RuntimeError("unable to locate safetensors pread offset")
     safetensors.write_text(source.replace(old_offset, new_offset, 1),
                            encoding="utf-8", newline="\n")
+
+
+def patch_ffmpeg_limits(root: Path) -> None:
+    """Make POSIX SSIZE_MAX use self-contained on Linux and BSD hosts."""
+    path = root / "h3_ffmpeg.c"
+    text = path.read_text(encoding="utf-8")
+    marker = "#include <errno.h>\n"
+    if "#include <limits.h>" not in text:
+        if marker not in text:
+            raise RuntimeError("unable to locate h3_ffmpeg errno include")
+        text = text.replace(marker, marker + "#include <limits.h>\n", 1)
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def patch_text_embedding_sidecar(root: Path) -> None:
@@ -368,6 +380,7 @@ def patch_tree(root: Path) -> None:
     replace_host_resize(root / "h3_host.c")
     patch_cli_name(root)
     patch_windows_stat(root)
+    patch_ffmpeg_limits(root)
     patch_text_embedding_sidecar(root)
     patch_quantized_loader(root)
     patch_c_linkage(root / "h3_gpu.h", "#include <stdint.h>\n\n")

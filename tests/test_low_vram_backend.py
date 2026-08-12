@@ -310,6 +310,16 @@ class LowVramBackendTest(unittest.TestCase):
             self.assertIn("#elif defined(__APPLE__)", source)
             self.assertIn("status.st_mtim.tv_sec", source)
 
+    def test_ffmpeg_ssize_max_has_its_posix_header(self) -> None:
+        bootstrap = (ROOT / "scripts/bootstrap.py").read_text(encoding="utf-8")
+        self.assertIn("patch_ffmpeg_limits(root)", bootstrap)
+        self.assertIn('marker + "#include <limits.h>\\n"', bootstrap)
+        prepared = ROOT / "third_party/h3/h3_ffmpeg.c"
+        if prepared.is_file():
+            source = prepared.read_text(encoding="utf-8")
+            self.assertIn("SSIZE_MAX", source)
+            self.assertIn("#include <limits.h>", source)
+
 
 if __name__ == "__main__":
     unittest.main()
