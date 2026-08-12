@@ -26,7 +26,7 @@
 - Updated documentation and validation gates for WSL2, 8 GiB VRAM and 64–96 GiB
   system-memory configurations.
 - Completed native NVCC/CUDA 13.2 validation on an RTX 3070 Ti, including
-  16/16 focused CTest checks and a real 20-step, 22-frame H.264/AAC generation
+  17/17 focused CTest checks and a real 20-step, 22-frame H.264/AAC generation
   matching the red-fox/snowy-pine prompt.
 - Added an experimental 480p fast-quality preset using a 288×160 internal
   canvas and `--core-reuse 4`; its 124-frame / 5.167-second path completed with
@@ -45,7 +45,9 @@
   `encode_h3_quantized_prompt.py` emits a prompt-bound BF16 sidecar with token
   IDs/tags and a whole-Qwen SHA-256; the native runtime accepts it only through
   `H3CSPEED_TEXT_EMBEDDING` plus `H3CSPEED_TEXT_ENCODER_SHA256`, and only for
-  pure T2V.
+  T2V and fail-closed FL2VA first/last-keyframe I2V. Sidecar v2 binds the
+  canonical FFmpeg-processed keyframe SHA-256, render geometry and exact
+  Comfy Picture/vision-pad token sequence; Ref2VA remains rejected.
 - Added `scripts/run-h3-quantized.ps1`, a fail-closed Windows wrapper that
   discovers or accepts the ComfyUI venv Python, verifies the helper-reported
   model fingerprint against `Get-FileHash`, and launches the native INT8
@@ -56,6 +58,12 @@
   exited 0, passed full decode and showed a recognizable fox; the 20-step
   artifact and measured offload telemetry are recorded in
   `VALIDATION_RESULTS.md`.
+- Added opt-in `H3_CUDA_ATTENTION=sage`: per-token INT8 Q/K, DP4A QK, FP32
+  online softmax and BF16 V/output for eligible attention shapes. Unsupported
+  CUDA shapes/dtypes remain on the native GPU attention path; there is no CPU
+  fallback. The RTX 3070 Ti focused B=1/H=56/N=800/D=128 benchmark measured a
+  1.073x speedup with cosine 0.999999. The measured peak device allocation was
+  55.03 MiB; full command/toolchain metadata is recorded in the README.
 - Added model-free Windows and Linux CUDA 13.2 / `sm_86` runtime archives with
   private CUDA/ICU dependency closure, redistribution notices, deterministic
   file manifests and fail-closed exclusion of models, sidecars and media.

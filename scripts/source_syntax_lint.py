@@ -164,6 +164,7 @@ typedef struct {
         extern __device__ float fabsf(float);
         extern __device__ float erff(float);
         extern __device__ float fmaf(float, float, float);
+        extern __device__ int __dp4a(int, int, int);
         typedef int cudaError_t;
         typedef void *cudaStream_t;
         typedef void *cudaEvent_t;

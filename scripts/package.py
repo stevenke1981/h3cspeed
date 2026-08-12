@@ -44,8 +44,12 @@ EXCLUDED_SECRET_NAMES = {
 
 def excluded(relative: Path) -> bool:
     parts = tuple(part.lower() for part in relative.parts)
+    # Prefix rules apply to directories only. Build entrypoints such as
+    # scripts/build.sh and scripts/build-native.ps1 are required source files.
     if any(part in EXCLUDED_PARTS or part.startswith(EXCLUDED_DIR_PREFIXES)
-           for part in parts):
+           for part in parts[:-1]):
+        return True
+    if any(part.startswith("h3cspeed-keyframe-") for part in parts):
         return True
     name = relative.name.lower()
     if (name in EXCLUDED_SECRET_NAMES or name.startswith((
@@ -54,7 +58,7 @@ def excluded(relative: Path) -> bool:
     if name == ".env" or (name.startswith(".env.") and
                             name != ".env.example"):
         return True
-    return name.endswith(EXCLUDED_SUFFIXES)
+    return name.endswith(EXCLUDED_SUFFIXES) or ".h3c." in name
 
 
 def sha256(path: Path) -> str:

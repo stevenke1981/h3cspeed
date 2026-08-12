@@ -33,6 +33,15 @@ static uint16_t f32_to_bf16(float value) {
     return (uint16_t)(bits >> 16);
 }
 
+static int set_attention_backend(const char *value) {
+#if defined(_WIN32)
+    return _putenv_s("H3_CUDA_ATTENTION", value ? value : "") == 0;
+#else
+    return value ? setenv("H3_CUDA_ATTENTION", value, 1) == 0 :
+                   unsetenv("H3_CUDA_ATTENTION") == 0;
+#endif
+}
+
 static int is_no_cuda_device_error(const char *error) {
     char normalized[512];
     size_t length = 0;
@@ -418,6 +427,89 @@ static int test_text_gqa_row_major(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_sage_video_attention(h3_gpu *gpu) {
+    enum { SEQUENCE = 3, HEADS = 1, HEAD_DIM = 8, ELEMENTS = SEQUENCE * HEAD_DIM };
+    uint16_t query_bits[ELEMENTS], key_bits[ELEMENTS], value_bits[ELEMENTS];
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    for (int row = 0; row < SEQUENCE; row++) {
+        for (int d = 0; d < HEAD_DIM; d++) {
+            size_t index = (size_t)row * HEAD_DIM + d;
+            query_bits[index] = f32_to_bf16(
+                sinf((float)(index + 1) * 0.37f) * 1.5f);
+            key_bits[index] = f32_to_bf16(
+                cosf((float)(index + 3) * 0.23f) * 1.25f);
+            value_bits[index] = f32_to_bf16(
+                ((float)(row + 1) * 0.5f) + (float)d * 0.125f);
+        }
+    }
+    h3_gpu_tensor *query = h3_gpu_tensor_from_bf16(gpu, query_bits, ELEMENTS);
+    h3_gpu_tensor *key = h3_gpu_tensor_from_bf16(gpu, key_bits, ELEMENTS);
+    h3_gpu_tensor *value = h3_gpu_tensor_from_bf16(gpu, value_bits, ELEMENTS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, ELEMENTS);
+    CHECK(query && key && value && output);
+    CHECK(h3_gpu_begin(gpu));
+    CHECK(h3_gpu_sdpa_bf16_head_major_output(
+        gpu, output, query, key, value, SEQUENCE, HEADS, HEAD_DIM, scale));
+    CHECK(h3_gpu_submit(gpu));
+    uint16_t actual[ELEMENTS];
+    CHECK(h3_gpu_tensor_read_bf16(output, actual, ELEMENTS));
+    for (int row = 0; row < SEQUENCE; row++) {
+        float scores[SEQUENCE], maximum = -INFINITY, denominator = 0.0f;
+        for (int key_row = 0; key_row < SEQUENCE; key_row++) {
+            float dot = 0.0f;
+            for (int d = 0; d < HEAD_DIM; d++)
+                dot += bf16_to_f32(query_bits[row * HEAD_DIM + d]) *
+                       bf16_to_f32(key_bits[key_row * HEAD_DIM + d]);
+            scores[key_row] = dot * scale;
+            if (scores[key_row] > maximum) maximum = scores[key_row];
+        }
+        for (int key_row = 0; key_row < SEQUENCE; key_row++) {
+            scores[key_row] = expf(scores[key_row] - maximum);
+            denominator += scores[key_row];
+        }
+        for (int d = 0; d < HEAD_DIM; d++) {
+            float expected = 0.0f;
+            for (int key_row = 0; key_row < SEQUENCE; key_row++)
+                expected += scores[key_row] / denominator *
+                    bf16_to_f32(value_bits[key_row * HEAD_DIM + d]);
+            CHECK(close_f32(
+                bf16_to_f32(actual[row * HEAD_DIM + d]), expected, 0.04f));
+        }
+    }
+    h3_gpu_tensor_free(output);
+    h3_gpu_tensor_free(value);
+    h3_gpu_tensor_free(key);
+    h3_gpu_tensor_free(query);
+    return 0;
+}
+
+static int test_sage_f32_native_fallback(h3_gpu *gpu) {
+    enum { SEQUENCE = 2, HEADS = 1, HEAD_DIM = 4, ELEMENTS = 8 };
+    const float query_values[ELEMENTS] = {
+        1.0f, -0.5f, 0.25f, 2.0f, -1.0f, 0.75f, 1.5f, -0.25f};
+    const float key_values[ELEMENTS] = {
+        0.5f, 1.0f, -0.5f, 0.25f, 1.25f, -0.75f, 0.5f, 1.0f};
+    const float value_values[ELEMENTS] = {
+        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+    h3_gpu_tensor *query = h3_gpu_tensor_from_f32(gpu, query_values, ELEMENTS);
+    h3_gpu_tensor *key = h3_gpu_tensor_from_f32(gpu, key_values, ELEMENTS);
+    h3_gpu_tensor *value = h3_gpu_tensor_from_f32(gpu, value_values, ELEMENTS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, ELEMENTS);
+    CHECK(query && key && value && output);
+    CHECK(h3_gpu_begin(gpu));
+    CHECK(h3_gpu_sdpa_f32(
+        gpu, output, query, key, value, SEQUENCE, HEADS, HEAD_DIM, 0.5f));
+    CHECK(h3_gpu_submit(gpu));
+    float actual[ELEMENTS];
+    CHECK(h3_gpu_tensor_read_f32(output, actual, ELEMENTS));
+    for (size_t index = 0; index < ELEMENTS; index++) CHECK(isfinite(actual[index]));
+    h3_gpu_tensor_free(output);
+    h3_gpu_tensor_free(value);
+    h3_gpu_tensor_free(key);
+    h3_gpu_tensor_free(query);
+    return 0;
+}
+
 int main(void) {
     char error[512] = {0};
     h3_gpu *gpu = h3_gpu_create(NULL, error, sizeof(error));
@@ -436,6 +528,11 @@ int main(void) {
                  test_fused_adaln_inverse(gpu) ||
                  test_text_rope_row_major(gpu) ||
                  test_text_gqa_row_major(gpu);
+    if (!result && (!set_attention_backend("sage") ||
+                    test_text_gqa_row_major(gpu) ||
+                    test_sage_video_attention(gpu) ||
+                    test_sage_f32_native_fallback(gpu))) result = 1;
+    if (!set_attention_backend(NULL)) result = 1;
     h3_gpu_free(gpu);
     if (!result) puts("CUDA numeric regression passed");
     return result;

@@ -6,7 +6,8 @@
 - System RAM: 31.81 GiB
 - Toolchain: CUDA Toolkit 13.2 / nvcc 13.2.78, Visual Studio Build Tools 2026,
   CMake 4.3.2, Ninja 1.13.2, ICU 76.1
-- Build: `scripts/build-native.ps1 -BuildDirectory build-native-verify -CudaArchitectures 86`
+- Driver: NVIDIA 596.36
+- Build: `scripts/build-native.ps1 -BuildDirectory build-quant -CudaArchitectures 86 -BuildType Release`
 
 ## PASS
 
@@ -16,10 +17,10 @@
   cases skip on native Windows).
 - Public CUDA backend API coverage: 103/103.
 - Windows Clang host syntax checks for all CUDA sources and portable C sources.
-- Portable overlay configure/build and CTest: 9/9.
+- Portable overlay configure/build and CTest: 11/11.
 - Native CUDA/MSVC build and link: `h3cspeed.exe`,
   `h3cspeed-cuda-info.exe`, library, and focused tests.
-- Native CTest: 16/16. This includes CUDA numeric-layout, ConvRot, NVFP4,
+- Native CTest: 17/17. This includes CUDA numeric-layout, ConvRot, NVFP4,
   converted-weight eviction/reload and scale-broadcast
   regressions, 64-bit `pread`/`stat` over a 5 GiB sparse
   file, POSIX spawn redirection, and real FFmpeg RGB+PCM encode, FFprobe, image
@@ -86,6 +87,27 @@
   357.75 GiB evictions and 100.56 GiB file fallback. The 11.241-second denoise
   profile is kernel/compute time and excludes offload wait; it is not an
   end-to-end wall-clock measurement.
+- A real quantized FL2VA I2V + opt-in SageAttention 256x256, 22-frame, 4-step
+  smoke exited 0 after native INT8 DiT, Audio VAE, Video VAE and FFmpeg. The
+  70,295-byte H.264/AAC artifact has SHA-256
+  `82CFCCB00E430D86E95B1042D4D9618A33E54990D24FC73652F02C107FFC89CA`;
+  full decode exited 0, all 22 frames decoded, and first/middle/final visual
+  inspection showed a coherent red fox walking through snow without patch
+  noise. Audio decoded to 59,392 interleaved float samples with -38.75 dB RMS
+  and -18.86 dB peak. DiT telemetry recorded 1,803.98 MiB peak device,
+  1,522.56 MiB peak resident and 12,582.55 MiB peak host memory, 73.33 GiB
+  uploads, 70.40 GiB evictions and 22.70 GiB file fallback. This four-step run
+  is a pipeline/semantic smoke, not the 20-step I2V quality baseline.
+- The focused SageAttention benchmark used Windows 10 build 19045, RTX 3070 Ti
+  8 GiB (`sm_86`), driver 596.36, CUDA 13.2 / nvcc 13.2.78, VS Build Tools
+  18.6.0 (MSVC 14.51), Release architecture 86, B=1/H=56/N=800/D=128, two
+  warmups and ten iterations. Command:
+  `$env:H3_CUDA_ATTENTION='native'; .\build-quant\bench_cuda_attention.exe`.
+  Native measured 104.806 ms and Sage 97.644 ms (1.073x), MAE 5.75368e-6,
+  maximum absolute error 0.000488281 and cosine 0.999999. The measured device
+  peak was 55.03 MiB, host cache was 0 MiB, and the five benchmark BF16 host
+  arrays total 54.69 MiB. Compute Sanitizer on the final CUDA numeric test
+  reported memcheck 0 errors and racecheck 0 hazards.
 
 Observed low-VRAM policy on the acceptance machine:
 

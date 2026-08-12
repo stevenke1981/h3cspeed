@@ -261,7 +261,7 @@ class LowVramBackendTest(unittest.TestCase):
         self.assertNotIn("--reuse 2", smoke)
         self.assertNotIn("--core-reuse 4", smoke)
 
-    def test_text_sidecar_branch_is_t2v_only_and_fail_closed(self) -> None:
+    def test_text_sidecar_branch_supports_fl2va_and_is_fail_closed(self) -> None:
         bootstrap = (ROOT / "scripts/bootstrap.py").read_text(encoding="utf-8")
         prepared = ROOT / "third_party/h3/h3.c"
         if not prepared.is_file():
@@ -273,7 +273,9 @@ class LowVramBackendTest(unittest.TestCase):
                     "h3_parse_sha256_hex",
                     "h3cspeed_text_embedding_load_file",
                     "skipping native Qwen text encoder",
-                    "h3_cache_clear(ctx)"):
+                    "h3_cache_clear(ctx)",
+                    "patch_frame_anchor_allocation",
+                    "patch_sidecar_keyframe_hash_guard"):
                 self.assertIn(marker, bootstrap)
             self.assertIn("patch_text_embedding_sidecar(root)", bootstrap)
             return
@@ -282,10 +284,19 @@ class LowVramBackendTest(unittest.TestCase):
         self.assertIn('getenv("H3CSPEED_TEXT_ENCODER_SHA256")', source)
         self.assertIn("h3_parse_sha256_hex", source)
         self.assertIn("text_sidecar_sha256", source)
+        self.assertIn("h3cspeed_keyframe_snapshot_create", source)
+        self.assertIn("first_snapshot.sha256", source)
+        self.assertIn("last_snapshot.sha256", source)
+        self.assertIn("first_frame_path = first_snapshot.path", source)
+        self.assertIn("last_frame_path = last_snapshot.path", source)
+        self.assertIn("h3cspeed_keyframe_snapshot_discard", source)
         self.assertIn("64 hexadecimal", source)
-        self.assertIn("first/last frames and references are not allowed", source)
+        self.assertIn("does not support Ref2VA references", source)
+        self.assertIn("using FL2VA I2V text sidecar", source)
+        self.assertIn("h3cspeed_text_embedding_load_file_ex", source)
         self.assertIn("h3cspeed_text_embedding_load_file", source)
         self.assertIn("skipping native Qwen text encoder", source)
+        self.assertIn("params->reference_count && !reference_visual_indices", source)
         self.assertIn('h3_key_file(&key, "text-sidecar", sidecar)', source)
         self.assertIn('"|text-sha=%s"', source)
         self.assertIn("if (text_sidecar_path) h3_cache_clear(ctx);", source)
@@ -319,6 +330,17 @@ class LowVramBackendTest(unittest.TestCase):
             source = prepared.read_text(encoding="utf-8")
             self.assertIn("SSIZE_MAX", source)
             self.assertIn("#include <limits.h>", source)
+
+    def test_linux_random_seed_does_not_require_new_glibc(self) -> None:
+        bootstrap = (ROOT / "scripts/bootstrap.py").read_text(encoding="utf-8")
+        self.assertIn("patch_linux_random_seed(root)", bootstrap)
+        self.assertIn("#include <sys/random.h>", bootstrap)
+        self.assertIn("getrandom(cursor, remaining, 0)", bootstrap)
+        prepared = ROOT / "third_party/h3/h3_cli.c"
+        if prepared.is_file():
+            source = prepared.read_text(encoding="utf-8")
+            self.assertIn("#if defined(__linux__)", source)
+            self.assertIn("getrandom(cursor, remaining, 0)", source)
 
 
 if __name__ == "__main__":

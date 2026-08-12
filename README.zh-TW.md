@@ -206,8 +206,12 @@ materialize BF16 權重，並非原生 NVFP4 Tensor Core 執行。這個四檔�
 Qwen NVFP4/AWQ 雖然可以載入與執行，但仍標記為 experimental，不能當作此
 量化包的語意品質 gate。正式可用的路徑是讓本機 ComfyUI CUDA runtime 先
 編碼同一個 prompt，再把 prompt 綁定的 BF16 conditioning sidecar 交給
-native INT8 DiT／VAE。這個 bridge 是明確、GPU-only、純 T2V，不會靜默改用
-CPU，也不接受 Ref2VA 參考圖。
+native INT8 DiT／VAE。這個 bridge 是明確、GPU-only，不會靜默改用 CPU。
+Sidecar v2 另支援 FL2VA first／last keyframe I2V，但仍拒絕 Ref2VA 參考圖。
+Helper 會先依 native 規則產生 canonical PNG（first=stretch、last=cover），
+把完全相同的影像送入 Comfy Qwen 與 native keyframe 路徑，並在 Qwen 前後
+驗證原始檔與 canonical 影像 SHA-256；sidecar 同時綁定 render geometry、
+Picture／vision-pad token sequence 與 canonical digest。
 
 Helper 會以 Comfy 的 tokenizer／Qwen CUDA 路徑產生 atomic sidecar，內容含
 prompt UTF-8、token ID／tag、BF16 conditioning，以及整個 Qwen 模型的
@@ -245,6 +249,20 @@ helper／sidecar／SHA 驗證失敗、尺寸錯誤或 reuse 設定衝突，都�
 完整 decode 且可辨識狐狸的 smoke；20-step 的 H.264/AAC artifact 與量測記錄
 收錄於 `VALIDATION_RESULTS.md`，直接 native Qwen 仍維持 experimental。
 
+FL2VA I2V 可傳入第一張、最後一張或兩者。Wrapper 會建立 canonical PNG 與
+v2 sidecar，再把 canonical PNG 傳給 native keyframe conditioning；digest 或
+geometry 不一致會 fail-closed：
+
+```powershell
+.\scripts\run-h3-quantized.ps1 `
+  -ModelRoot <prepared-root> -ComfyUIRoot <ComfyUI-root> `
+  -TextEncoder <Qwen-NVFP4-or-AWQ-safetensors> `
+  -Prompt "A red fox walks through fresh snow in a pine forest." `
+  -FirstFrame <first.png> -LastFrame <last.png> `
+  -Output <i2v-output.mp4> -Steps 20 -Width 864 -Height 480 `
+  -Frames 124
+```
+
 準備完成後，可先執行短版原生 diagnostic（experimental Qwen 路徑，不使用
 sidecar）：
 
@@ -259,6 +277,31 @@ sidecar）：
 
 正式品質基準請保持相同 layers／reuse，改用 20 steps；4-step 只驗證
 管線與提示語意。
+
+### Opt-in SageAttention
+
+設定 `H3_CUDA_ATTENTION=sage` 可啟用原生 Sage-style BF16 attention：Q／K
+逐 token INT8 量化、DP4A 計算 QK，softmax 保持 FP32 online 計算，V／輸出
+維持 BF16。`sm_80` 以上且符合條件的 DiT／text attention 會使用 Sage；
+F32 Video VAE 等不符合 dtype／shape 的路徑仍使用既有 CUDA attention，
+不會落到 CPU。預設仍是 `native`：
+
+```powershell
+$env:H3_CUDA_ATTENTION = 'sage'
+.\scripts\run-h3-quantized.ps1 <arguments>
+```
+
+實測主機為 Windows 10 22H2 build 19045、RTX 3070 Ti 8 GiB（`sm_86`）、
+NVIDIA driver 596.36、CUDA 13.2／nvcc 13.2.78、Visual Studio Build Tools
+18.6.0（MSVC 14.51）。Release build 命令為
+`scripts/build-native.ps1 -BuildDirectory build-quant -CudaArchitectures 86
+-BuildType Release`；以 `$env:H3_CUDA_ATTENTION='native';
+.\build-quant\bench_cuda_attention.exe` 跑 B=1／H=56／N=800／D=128、warmup
+2 次、正式 10 次，量得 native 104.806 ms、Sage 97.644 ms（1.073x），
+MAE 5.75e-6、最大絕對誤差 0.000488281、cosine 0.999999。backend 回報
+device allocation peak 55.03 MiB、host cache 0 MiB；benchmark 的五個 BF16
+host arrays 合計 54.69 MiB。這是單一 attention shape 實測，不代表整支影片
+必然有相同比例加速；目前只實測 `sm_86`，較新 NVIDIA 架構仍待驗證。
 
 ## 3. 最安全的第一個測試
 
@@ -418,7 +461,8 @@ watch -n 0.5 nvidia-smi
   H.264/AAC full decode、幀數、非靜音音訊與畫面檢查；量化四檔模型則以
   Comfy CUDA conditioning bridge + native INT8 DiT／VAE 作為可用路徑；
 - offload 會大量使用 PCIe 與 RAM，速度一定比完整 VRAM 常駐慢；
-- attention 仍是 bounded-memory 參考核心，VAE convolution 尚未改用 cuDNN；
+- native attention 仍是預設；opt-in Sage 目前只涵蓋符合條件的 BF16 shape，
+  VAE convolution 尚未改用 cuDNN；
 - 尚未支援多 GPU與 CPU 計算 fallback；
 - 8GB 模式先用 256×256／22 frames 的 diagnostic smoke 確認可辨識輸出；
   量化 sidecar 的 4-step 與 20-step 實機驗收均已通過；BF16 與量化正式

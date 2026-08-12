@@ -55,6 +55,8 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
     add_test(NAME offload_policy COMMAND test_offload_policy)
     add_test(NAME online_softmax_math
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_online_softmax.py)
+    add_test(NAME quantized_sidecar_v2
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_quantized_sidecar_v2.py)
     add_test(NAME alias_free_snake_math
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_alias_free_snake.py)
     add_test(NAME project_metadata
@@ -159,6 +161,7 @@ set(H3CSPEED_CUDA_SOURCES
 add_library(h3cspeed_core STATIC
     ${H3_UPSTREAM_C}
     src/h3_text_embedding_file.c
+    src/h3_fl2va_sidecar.c
     src/h3_tokenizer_portable.c
     src/h3_resize_portable.c
     src/h3_offload_policy.c
@@ -235,6 +238,7 @@ target_link_libraries(h3cspeed_core
         CUDA::cudart
         CUDA::cublas
         CUDA::cublasLt
+        $<$<PLATFORM_ID:Windows>:advapi32>
         $<$<NOT:$<PLATFORM_ID:Windows>>:m>
         $<$<NOT:$<PLATFORM_ID:Windows>>:dl>
 )
@@ -306,6 +310,12 @@ if(H3CSPEED_ENABLE_TESTS)
     target_link_libraries(test_cuda_numeric_regression PRIVATE h3cspeed_core)
     set_target_properties(test_cuda_numeric_regression PROPERTIES
         LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    add_executable(bench_cuda_attention tests/bench_cuda_attention.c)
+    target_include_directories(bench_cuda_attention PRIVATE
+        "${H3CSPEED_H3_SOURCE_DIR}")
+    target_link_libraries(bench_cuda_attention PRIVATE h3cspeed_core)
+    set_target_properties(bench_cuda_attention PROPERTIES
+        LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
     add_executable(test_cuda_convrot_numeric
         tests/test_cuda_convrot_numeric.c)
     target_include_directories(test_cuda_convrot_numeric PRIVATE
@@ -355,6 +365,10 @@ if(H3CSPEED_ENABLE_TESTS)
             _CRT_SECURE_NO_WARNINGS)
         target_compile_options(test_cuda_numeric_regression PRIVATE
             /W4 /WX /permissive-)
+        target_compile_definitions(bench_cuda_attention PRIVATE
+            _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(bench_cuda_attention PRIVATE
+            /W4 /WX /permissive-)
         target_compile_definitions(test_cuda_convrot_numeric PRIVATE
             _CRT_SECURE_NO_WARNINGS)
         target_compile_options(test_cuda_convrot_numeric PRIVATE
@@ -379,6 +393,8 @@ if(H3CSPEED_ENABLE_TESTS)
         target_compile_options(test_cuda_scale_add PRIVATE
             -Wall -Wextra -Wpedantic -Werror)
         target_compile_options(test_cuda_numeric_regression PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(bench_cuda_attention PRIVATE
             -Wall -Wextra -Wpedantic -Werror)
         target_compile_options(test_cuda_convrot_numeric PRIVATE
             -Wall -Wextra -Wpedantic -Werror)

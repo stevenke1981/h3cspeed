@@ -208,9 +208,15 @@ The native text encoder currently executes Qwen in BF16. Its direct NVFP4/AWQ
 decoder is therefore marked experimental: it loads and runs, but is not the
 semantic quality gate for this pack. For a usable quantized run, let the local
 ComfyUI CUDA runtime encode the exact prompt, then pass its prompt-bound BF16
-conditioning sidecar to the native INT8 DiT/VAE runtime. The bridge is explicit,
-GPU-only and pure T2V; it never silently falls back to CPU or accepts Ref2VA
-references.
+conditioning sidecar to the native INT8 DiT/VAE runtime. The bridge is explicit
+and GPU-only. Sidecar version 2 also supports FL2VA first/last-keyframe I2V. The
+helper first creates canonical processed PNGs with the native first=stretch and
+last=cover FFmpeg policies, then sends those exact images to ComfyUI and the
+native keyframe path. The sidecar binds BF16 conditioning to render geometry,
+the expanded Picture/vision-pad token sequence and canonical-image SHA-256;
+file hashes are checked before and after Qwen encoding. Ref2VA references
+remain rejected. Keyframe VAE/layout/augmentation continues to run natively,
+so latent parity remains an explicit validation gate.
 
 The helper writes an atomic sidecar containing the prompt bytes, Comfy token
 IDs/tags, BF16 conditioning and the whole Qwen model SHA-256. Invoke it with
@@ -250,6 +256,21 @@ sidecar route has passed real 4-step and 20-step exit-0/full-decode smokes with
 a recognizable fox. The 20-step 256x256/22-frame H.264/AAC artifact is recorded
 in `VALIDATION_RESULTS.md`; direct native Qwen remains experimental.
 
+For FL2VA I2V, pass one or both keyframes. The wrapper creates canonical
+processed PNGs and a v2 sidecar through ComfyUI's image-aware
+`tokenize(..., images=...)` path, then sends those canonical PNGs to the native
+keyframe path. A digest or geometry mismatch fails closed:
+
+```powershell
+.\scripts\run-h3-quantized.ps1 `
+  -ModelRoot <prepared-root> -ComfyUIRoot <ComfyUI-root> `
+  -TextEncoder <Qwen-NVFP4-or-AWQ-safetensors> `
+  -Prompt "A red fox walks through fresh snow in a pine forest." `
+  -FirstFrame <first.png> -LastFrame <last.png> `
+  -Output <i2v-output.mp4> -Steps 20 -Width 864 -Height 480 `
+  -Frames 124
+```
+
 After preparing the root, a short direct-native diagnostic run (experimental
 Qwen path, without the sidecar) is:
 
@@ -264,6 +285,33 @@ Qwen path, without the sidecar) is:
 
 Use 20 steps with the same layers/reuse settings for the quality baseline;
 the 4-step command is only a pipeline and semantic diagnostic.
+
+### Opt-in SageAttention
+
+Set `H3_CUDA_ATTENTION=sage` to select the native Sage-style BF16 attention
+backend. It quantizes Q/K per token to INT8, computes QK with DP4A, and retains
+FP32 online softmax plus BF16 V/output. Eligible DiT and text attention uses
+Sage on `sm_80` or newer; unsupported dtypes/shapes such as the F32 Video VAE
+remain on the existing CUDA attention kernel. There is no CPU fallback. The
+default is `native` and remains unchanged:
+
+```powershell
+$env:H3_CUDA_ATTENTION = 'sage'
+.\scripts\run-h3-quantized.ps1 <arguments>
+```
+
+The measured host was Windows 10 22H2 build 19045 with an RTX 3070 Ti 8 GiB
+(`sm_86`), NVIDIA driver 596.36, CUDA 13.2 / nvcc 13.2.78 and Visual Studio
+Build Tools 18.6.0 (MSVC 14.51). The Release binary was built with
+`scripts/build-native.ps1 -BuildDirectory build-quant -CudaArchitectures 86
+-BuildType Release`; running `$env:H3_CUDA_ATTENTION='native';
+.\build-quant\bench_cuda_attention.exe` for B=1/H=56/N=800/D=128, two warmups
+and ten measured iterations produced 104.806 ms native versus 97.644 ms Sage
+(1.073x), MAE 5.75e-6, maximum absolute error 0.000488281 and cosine 0.999999.
+The backend reported 55.03 MiB peak device allocation and 0 MiB host cache;
+the benchmark's five BF16 host arrays total 54.69 MiB. This is a single
+attention-shape measurement, not a whole-video speed guarantee. `sm_86` is
+measured; validation on a newer NVIDIA architecture remains pending.
 
 Inspect the selected memory policy before loading the model:
 
@@ -421,8 +469,8 @@ watch -n 0.5 nvidia-smi
 ## Known limits
 
 - CUDA host-only syntax validation is not a substitute for an NVCC build.
-- The reference attention and VAE convolution kernels are not yet
-  FlashAttention/cuDNN optimized.
+- Native attention remains the default. The opt-in Sage backend is currently
+  limited to eligible BF16 shapes; VAE convolution is not yet cuDNN optimized.
 - Offload trades VRAM for PCIe traffic and host RAM; it will be substantially
   slower than full residency.
 - Multi-GPU placement and CPU compute fallback are not yet implemented.

@@ -24,7 +24,7 @@ UPSTREAM_REPO = "antirez/h3.c"
 UPSTREAM_COMMIT = "8974cc055ea9c02fcd14cc27dfda3e1027c05153"
 ARCHIVE_URL = f"https://github.com/{UPSTREAM_REPO}/archive/{UPSTREAM_COMMIT}.zip"
 ARCHIVE_SHA256 = "dc6d3cd25cb70d5c723292e60f3f3b9093688a731467008a691d9a7412d3e8f3"
-PREPARED_TREE_SHA256 = "e7fa928f76ae68dd321ba3a2c4d263657af32c560b6dab4ccaf7928c7110c476"
+PREPARED_TREE_SHA256 = "ad08f146af8cada5ad9977f9c1ca4b7e4c512bab39a619a864a723c6ce74323b"
 
 # Git blob SHA-1 values, not ordinary file hashes. They pin the exact interfaces
 # on which the CUDA overlay was developed.
@@ -58,7 +58,7 @@ EXPECTED_GIT_BLOBS = {
 # of the generated marker detects edited or stale prepared trees without a
 # network request on every configure.
 PREPARED_GIT_BLOBS: dict[str, str] = {
-    "h3.c": "c04766167048a1fbed7f4206d9e5dd90d9f0098e",
+    "h3.c": "587dece23c5a4325ab40f9ba202fc46ff3782aa6",
     "h3.h": "29640b37abaa056341cf5e827ecc9df501ca7c5c",
     "h3_gpu.h": "7fb2871f0c7fca24c029fff80e1a135e06092a72",
     "h3_host.c": "6e875effe9dbe4294a3e35207806282decbad304",
@@ -78,7 +78,7 @@ PREPARED_GIT_BLOBS: dict[str, str] = {
     "h3_vision_encoder.c": "8867231b3b88064ee01ee865ebaa30af53a5b5e3",
     "h3_multimodal.c": "f7b25455865b6fe937b0e2f08c72770e3d39e96d",
     "main.c": "7f11e470a3c1a86a80f6f61fd5dffe67e8bbf621",
-    "h3_cli.c": "79339c8237bd1bf61f6eabb58612b94e7655f25e",
+    "h3_cli.c": "dddb2e655e2137e315762a96ba9db014a93c85a1",
     "linenoise.c": "2345b851b738d1106f5015b623a64a926a751216",
     "h3_metal.h": "c4fa79f06680c0d23012f4e500c46f1314561cb0",
     "h3_safetensors.h": "90335175f84b7d48349783c06fd044f0b4306981",
@@ -227,6 +227,59 @@ def patch_ffmpeg_limits(root: Path) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def patch_linux_random_seed(root: Path) -> None:
+    """Use Linux getrandom instead of the newer glibc arc4random_buf API."""
+    path = root / "h3_cli.c"
+    text = path.read_text(encoding="utf-8")
+    include_marker = "#include <sys/stat.h>\n"
+    include_patch = (
+        "#include <sys/stat.h>\n"
+        "#if defined(__linux__)\n"
+        "#include <sys/random.h>\n"
+        "#endif\n"
+    )
+    old = (
+        "static uint64_t random_seed(void) {\n"
+        "    uint64_t value;\n"
+        "    arc4random_buf(&value, sizeof(value));\n"
+        "    return value;\n"
+        "}\n"
+    )
+    new = (
+        "static uint64_t random_seed(void) {\n"
+        "    uint64_t value = 0;\n"
+        "#if defined(__linux__)\n"
+        "    unsigned char *cursor = (unsigned char *)&value;\n"
+        "    size_t remaining = sizeof(value);\n"
+        "    while (remaining) {\n"
+        "        ssize_t count = getrandom(cursor, remaining, 0);\n"
+        "        if (count > 0) {\n"
+        "            cursor += (size_t)count;\n"
+        "            remaining -= (size_t)count;\n"
+        "            continue;\n"
+        "        }\n"
+        "        if (count < 0 && errno == EINTR) continue;\n"
+        "        break;\n"
+        "    }\n"
+        "    if (!remaining) return value;\n"
+        "    value = ((uint64_t)time(NULL) << 32) ^ (uint64_t)getpid();\n"
+        "#else\n"
+        "    arc4random_buf(&value, sizeof(value));\n"
+        "#endif\n"
+        "    return value;\n"
+        "}\n"
+    )
+    if "#include <sys/random.h>" not in text:
+        if include_marker not in text:
+            raise RuntimeError("unable to locate h3_cli sys/stat include")
+        text = text.replace(include_marker, include_patch, 1)
+    if old in text:
+        text = text.replace(old, new, 1)
+    elif new not in text:
+        raise RuntimeError("unable to locate h3_cli random_seed")
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def patch_text_embedding_sidecar(root: Path) -> None:
     """Add the explicit text sidecar bridge to h3.c."""
     path = root / "h3.c"
@@ -237,6 +290,9 @@ def patch_text_embedding_sidecar(root: Path) -> None:
         if include not in text:
             raise RuntimeError("unable to locate h3 text encoder include")
         text = text.replace(include, include + include_marker, 1)
+    fl2va_include = '#include "h3_fl2va_sidecar.h"\n'
+    if fl2va_include not in text:
+        text = text.replace(include_marker, include_marker + fl2va_include, 1)
     if "h3_parse_sha256_hex" not in text:
         include = '#include "h3_text_embedding_file.h"\n'
         helper = '''#include <string.h>
@@ -282,10 +338,9 @@ static int h3_parse_sha256_hex(const char *text, uint8_t output[32]) {
                "    const char *text_sidecar_path = getenv(\"H3CSPEED_TEXT_EMBEDDING\");\n"
                "    uint8_t text_sidecar_sha256[32];\n"
                "    if (text_sidecar_path &&\n"
-               "        (ref2va || params->first_frame || params->last_frame)) {\n"
+               "        ref2va) {\n"
                "        h3_set_error(ctx,\n"
-               "            \"H3CSPEED_TEXT_EMBEDDING is supported only for pure T2V; \"\n"
-               "            \"first/last frames and references are not allowed\");\n"
+               "            \"H3CSPEED_TEXT_EMBEDDING does not support Ref2VA references\");\n"
                "        return NULL;\n"
                "    }\n"
                "    if (text_sidecar_path &&\n"
@@ -331,6 +386,195 @@ static int h3_parse_sha256_hex(const char *text, uint8_t output[32]) {
                "        }")
         if old not in text:
             raise RuntimeError("unable to locate h3 pure-T2V text encoder call")
+        text = text.replace(old, new, 1)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def patch_text_embedding_i2v(root: Path) -> None:
+    """Allow only the v2 FL2VA sidecar path for first/last keyframes."""
+    path = root / "h3.c"
+    text = path.read_text(encoding="utf-8")
+    if "using FL2VA I2V text sidecar" in text:
+        return
+    marker = "        size_t vision_cursor = 0;\n"
+    branch = '''        if (text_sidecar_path) {
+            h3_text_embedding_file_expectation expectation;
+            uint8_t first_hash[32], last_hash[32];
+            uint32_t *sidecar_ids = NULL;
+            size_t sidecar_count = 0;
+            memset(&expectation, 0, sizeof(expectation));
+            expectation.mode = H3CSPEED_TEXT_EMBEDDING_MODE_FL2VA_I2V;
+            expectation.keyframe_role =
+                (params->first_frame ? H3CSPEED_TEXT_EMBEDDING_ROLE_FIRST : 0u) |
+                (params->last_frame ? H3CSPEED_TEXT_EMBEDDING_ROLE_LAST : 0u);
+            expectation.keyframe_count = (uint32_t)visual_count;
+            expectation.keyframe_order = expectation.keyframe_role;
+            expectation.first_resize_policy = H3CSPEED_TEXT_EMBEDDING_RESIZE_STRETCH;
+            expectation.last_resize_policy = H3CSPEED_TEXT_EMBEDDING_RESIZE_COVER;
+            expectation.render_width = (uint32_t)render_width;
+            expectation.render_height = (uint32_t)render_height;
+            if ((params->first_frame && !h3cspeed_sha256_file(
+                    params->first_frame, first_hash, detail, sizeof(detail))) ||
+                (params->last_frame && !h3cspeed_sha256_file(
+                    params->last_frame, last_hash, detail, sizeof(detail)))) {
+                h3_set_error(ctx, "%s", detail);
+                goto cleanup;
+            }
+            expectation.first_image_sha256 = params->first_frame ? first_hash : NULL;
+            expectation.last_image_sha256 = params->last_frame ? last_hash : NULL;
+            if (!h3cspeed_fl2va_build_token_ids(
+                    tokenizer, prompt, condition_widths, condition_heights,
+                    visual_count, &sidecar_ids, &sidecar_count,
+                    detail, sizeof(detail))) {
+                h3_set_error(ctx, "%s", detail);
+                goto cleanup;
+            }
+            h3_progress_emit(&progress, "text encoder", 0, 50);
+            fprintf(stderr,
+                "h3: using FL2VA I2V text sidecar %s; skipping native Qwen vision/text encoder\\n",
+                text_sidecar_path);
+            int text_ok = h3cspeed_text_embedding_load_file_ex(
+                text_sidecar_path, prompt, sidecar_ids, sidecar_count,
+                text_sidecar_sha256, &expectation, &text,
+                detail, sizeof(detail));
+            free(sidecar_ids);
+            for (size_t image = 0; image < visual_count; image++) {
+                free(condition_pixels[image]);
+                condition_pixels[image] = NULL;
+            }
+            if (!text_ok) {
+                h3_set_error(ctx, "%s", detail);
+                goto cleanup;
+            }
+        } else {
+'''
+    if marker not in text:
+        raise RuntimeError("unable to locate h3 visual text encoder branch")
+    text = text.replace(marker, branch + marker, 1)
+    close_marker = (
+        "        for (size_t image = 0; image < vision_output_count; image++)\n"
+        "            h3_vision_output_free(&vision_outputs[image]);\n"
+        "    } else {\n"
+        "        if (!h3_tokenizer_encode(tokenizer, prompt, 1, &ids, &token_count,")
+    close_replacement = (
+        "        for (size_t image = 0; image < vision_output_count; image++)\n"
+        "            h3_vision_output_free(&vision_outputs[image]);\n"
+        "        }\n"
+        "    } else {\n"
+        "        if (!h3_tokenizer_encode(tokenizer, prompt, 1, &ids, &token_count,")
+    if close_marker not in text:
+        raise RuntimeError("unable to locate h3 visual branch close")
+    text = text.replace(close_marker, close_replacement, 1)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def patch_sidecar_keyframe_hash_guard(root: Path) -> None:
+    """Decode and hash I2V keyframes from one private immutable snapshot."""
+    path = root / "h3.c"
+    text = path.read_text(encoding="utf-8")
+    if "h3cspeed_keyframe_snapshot first_snapshot" in text:
+        return
+    locals_marker = """    int decoder_is_cached = 0;
+"""
+    locals_replacement = """    int decoder_is_cached = 0;
+    h3cspeed_keyframe_snapshot first_snapshot = {{0}, {0}, {0}};
+    h3cspeed_keyframe_snapshot last_snapshot = {{0}, {0}, {0}};
+    const char *first_frame_path = params->first_frame;
+    const char *last_frame_path = params->last_frame;
+"""
+    if locals_marker not in text:
+        raise RuntimeError("unable to locate keyframe snapshot locals")
+    text = text.replace(locals_marker, locals_replacement, 1)
+    paths_marker = """        goto cleanup;
+    }
+    conditioning_key = h3_conditioning_key(
+"""
+    paths_replacement = """        goto cleanup;
+    }
+    char detail[512];
+    if (text_sidecar_path && params->first_frame) {
+        if (!h3cspeed_keyframe_snapshot_create(
+                params->first_frame, &first_snapshot,
+                detail, sizeof(detail))) {
+            h3_set_error(ctx, "%s", detail);
+            goto cleanup;
+        }
+        first_frame_path = first_snapshot.path;
+    }
+    if (text_sidecar_path && params->last_frame) {
+        if (!h3cspeed_keyframe_snapshot_create(
+                params->last_frame, &last_snapshot,
+                detail, sizeof(detail))) {
+            h3_set_error(ctx, "%s", detail);
+            goto cleanup;
+        }
+        last_frame_path = last_snapshot.path;
+    }
+    conditioning_key = h3_conditioning_key(
+"""
+    if paths_marker not in text:
+        raise RuntimeError("unable to locate keyframe snapshot setup")
+    text = text.replace(paths_marker, paths_replacement, 1)
+    text = text.replace("    char detail[512];\n    if (conditioning_hit) {",
+                        "    if (conditioning_hit) {", 1)
+    text = text.replace(
+        "params->first_frame, render_width, render_height,\n"
+        "                    H3_IMAGE_FIT_STRETCH",
+        "first_frame_path, render_width, render_height,\n"
+        "                    H3_IMAGE_FIT_STRETCH", 1)
+    text = text.replace(
+        "params->last_frame, render_width, render_height,\n"
+        "                    H3_IMAGE_FIT_COVER",
+        "last_frame_path, render_width, render_height,\n"
+        "                    H3_IMAGE_FIT_COVER", 1)
+    hash_block = """            uint8_t first_hash[32], last_hash[32];
+"""
+    if hash_block not in text:
+        raise RuntimeError("unable to locate sidecar hash locals")
+    text = text.replace(hash_block, "", 1)
+    old_hash = """            if ((params->first_frame && !h3cspeed_sha256_file(
+                    params->first_frame, first_hash, detail, sizeof(detail))) ||
+                (params->last_frame && !h3cspeed_sha256_file(
+                    params->last_frame, last_hash, detail, sizeof(detail)))) {
+                h3_set_error(ctx, "%s", detail);
+                goto cleanup;
+            }
+            expectation.first_image_sha256 = params->first_frame ? first_hash : NULL;
+            expectation.last_image_sha256 = params->last_frame ? last_hash : NULL;
+"""
+    new_hash = """            expectation.first_image_sha256 =
+                params->first_frame ? first_snapshot.sha256 : NULL;
+            expectation.last_image_sha256 =
+                params->last_frame ? last_snapshot.sha256 : NULL;
+"""
+    if old_hash not in text:
+        raise RuntimeError("unable to bind sidecar to keyframe snapshot")
+    text = text.replace(old_hash, new_hash, 1)
+    cleanup_marker = """cleanup:
+    free(conditioning_key);
+"""
+    cleanup_replacement = """cleanup:
+    h3cspeed_keyframe_snapshot_discard(&first_snapshot);
+    h3cspeed_keyframe_snapshot_discard(&last_snapshot);
+    free(conditioning_key);
+"""
+    if cleanup_marker not in text:
+        raise RuntimeError("unable to locate keyframe snapshot cleanup")
+    text = text.replace(cleanup_marker, cleanup_replacement, 1)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def patch_frame_anchor_allocation(root: Path) -> None:
+    """Do not treat malloc(0) as an I2V frame-anchor allocation failure."""
+    path = root / "h3.c"
+    text = path.read_text(encoding="utf-8")
+    old = ("            !condition_frames || !visual_reference_indices ||\n"
+           "            !reference_visual_indices ||\n")
+    new = ("            !condition_frames || !visual_reference_indices ||\n"
+           "            (params->reference_count && !reference_visual_indices) ||\n")
+    if new not in text:
+        if old not in text:
+            raise RuntimeError("unable to locate h3 visual allocation guard")
         text = text.replace(old, new, 1)
     path.write_text(text, encoding="utf-8", newline="\n")
 
@@ -381,7 +625,11 @@ def patch_tree(root: Path) -> None:
     patch_cli_name(root)
     patch_windows_stat(root)
     patch_ffmpeg_limits(root)
+    patch_linux_random_seed(root)
     patch_text_embedding_sidecar(root)
+    patch_text_embedding_i2v(root)
+    patch_sidecar_keyframe_hash_guard(root)
+    patch_frame_anchor_allocation(root)
     patch_quantized_loader(root)
     patch_c_linkage(root / "h3_gpu.h", "#include <stdint.h>\n\n")
     patch_c_linkage(root / "h3_metal.h", '#include "h3.h"\n\n')

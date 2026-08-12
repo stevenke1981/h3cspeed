@@ -92,6 +92,9 @@ class ProjectMetadataTest(unittest.TestCase):
         package = load_package_module()
         for artifact in (
                 Path("prompt.conditioning.h3c"),
+                Path("prompt.conditioning.h3c.first.png"),
+                Path("prompt.conditioning.h3c.last.png"),
+                Path("h3cspeed-keyframe-deadbeef/image.png"),
                 Path("prompt.embedding.bf16"),
                 Path("models/checkpoint.safetensors"),
                 Path("models/checkpoint.gguf"),
@@ -99,6 +102,17 @@ class ProjectMetadataTest(unittest.TestCase):
                 Path("dist/h3cspeed-linux.tar.gz")):
             with self.subTest(artifact=artifact):
                 self.assertTrue(package.excluded(artifact))
+
+        for source_entrypoint in (
+                Path("scripts/build.sh"),
+                Path("scripts/build-native.ps1"),
+                Path("scripts/build-wsl.ps1")):
+            with self.subTest(source_entrypoint=source_entrypoint):
+                self.assertFalse(package.excluded(source_entrypoint))
+
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("*.h3c", gitignore)
+        self.assertIn("*.h3c.*", gitignore)
 
     def test_upstream_overlay_ships_its_mit_license(self) -> None:
         license_path = ROOT / "licenses/antirez-h3.c-LICENSE"

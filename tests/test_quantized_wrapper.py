@@ -44,6 +44,17 @@ class QuantizedWrapperStaticTests(unittest.TestCase):
         self.assertIn("H3CSPEED_TEXT_ENCODER_SHA256", self.source)
         self.assertIn("finally", self.source)
 
+    def test_i2v_keyframe_contract_is_explicit(self) -> None:
+        for flag in ("FirstFrame", "LastFrame"):
+            self.assertIn(f"${flag}", self.source)
+        self.assertIn('"--mode", $mode', self.source)
+        self.assertIn('"--first-frame", $firstFrame', self.source)
+        self.assertIn('"--last-frame", $lastFrame', self.source)
+        self.assertIn('"--first-frame", $firstFrame', self.source)
+        self.assertIn("I2V width and height must both be at least 64", self.source)
+        self.assertIn("sidecar path must end in .h3c", self.source)
+        self.assertNotIn('$mode -eq "fl2va-i2v" -and\n        -not $sidecar.EndsWith', self.source)
+
     def test_fail_closed_cuda_and_argument_array_launch(self) -> None:
         self.assertIn('Set-StrictMode -Version Latest', self.source)
         self.assertIn('$ErrorActionPreference = "Stop"', self.source)

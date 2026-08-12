@@ -25,7 +25,9 @@ param(
     [string]$Device = "cuda:0",
     [string]$ComfyPython = "",
     [string]$BinaryPath = "",
-    [string]$SidecarPath = ""
+    [string]$SidecarPath = "",
+    [string]$FirstFrame = "",
+    [string]$LastFrame = ""
 )
 
 Set-StrictMode -Version Latest
@@ -164,6 +166,18 @@ try {
     $modelRoot = Resolve-ExistingDirectory $ModelRoot "Model root"
     $comfyRoot = Resolve-ExistingDirectory $ComfyUIRoot "ComfyUI root"
     $encoder = Resolve-ExistingFile $TextEncoder "Quantized Qwen text encoder"
+    $firstFrameSource = if ([string]::IsNullOrWhiteSpace($FirstFrame)) { $null } else { Resolve-ExistingFile $FirstFrame "First-frame image" }
+    $lastFrameSource = if ([string]::IsNullOrWhiteSpace($LastFrame)) { $null } else { Resolve-ExistingFile $LastFrame "Last-frame image" }
+    $firstFrame = $firstFrameSource
+    $lastFrame = $lastFrameSource
+    if (($null -eq $firstFrame) -and ($null -eq $lastFrame)) {
+        $mode = "t2v"
+    } else {
+        $mode = "fl2va-i2v"
+        if ($Width -lt 64 -or $Height -lt 64) {
+            throw "I2V width and height must both be at least 64"
+        }
+    }
     $repositoryRoot = ConvertTo-AbsolutePath (Join-Path $PSScriptRoot "..")
     $helper = Resolve-ExistingFile (Join-Path $repositoryRoot "scripts\encode_h3_quantized_prompt.py") "conditioning helper"
     $python = Resolve-ComfyPython $comfyRoot $ComfyPython
@@ -177,6 +191,9 @@ try {
     if ([StringComparer]::OrdinalIgnoreCase.Equals($output, $sidecar)) {
         throw "Output and conditioning sidecar must be different paths"
     }
+    if (-not $sidecar.EndsWith(".h3c", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Conditioning sidecar path must end in .h3c"
+    }
 
     $helperArguments = @(
         $helper,
@@ -184,8 +201,13 @@ try {
         "--text-encoder", $encoder,
         "--output", $sidecar,
         "--prompt", $Prompt,
-        "--device", $Device
+        "--device", $Device,
+        "--mode", $mode,
+        "--width", $Width.ToString([Globalization.CultureInfo]::InvariantCulture),
+        "--height", $Height.ToString([Globalization.CultureInfo]::InvariantCulture)
     )
+    if ($null -ne $firstFrame) { $helperArguments += @("--first-frame", $firstFrame) }
+    if ($null -ne $lastFrame) { $helperArguments += @("--last-frame", $lastFrame) }
     Write-Host "[h3cspeed] generating GPU ComfyUI conditioning sidecar"
     $helperLines = @(& $python @helperArguments 2>&1 | ForEach-Object { $_.ToString() })
     $helperExitCode = $LASTEXITCODE
@@ -197,6 +219,12 @@ try {
     }
     if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) {
         throw "conditioning helper succeeded but did not create sidecar: $sidecar"
+    }
+    if ($null -ne $firstFrameSource) {
+        $firstFrame = Resolve-ExistingFile "$sidecar.first.png" "Canonical first-frame image"
+    }
+    if ($null -ne $lastFrameSource) {
+        $lastFrame = Resolve-ExistingFile "$sidecar.last.png" "Canonical last-frame image"
     }
 
     $reportedHashes = @(
@@ -231,6 +259,8 @@ try {
         "--ssd-streaming",
         "-o", $output
     )
+    if ($null -ne $firstFrame) { $cliArguments += @("--first-frame", $firstFrame) }
+    if ($null -ne $lastFrame) { $cliArguments += @("--last-frame", $lastFrame) }
     Write-Host "[h3cspeed] running hybrid Comfy-conditioned/native INT8 DiT path"
     & $binary @cliArguments
     $exitCode = $LASTEXITCODE
