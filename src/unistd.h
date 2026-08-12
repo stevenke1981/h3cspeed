@@ -79,6 +79,9 @@ static inline int h3cspeed_pipe(int stream[2]) {
 }
 #define pipe h3cspeed_pipe
 #else
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC system_header
+#endif
 #include_next <unistd.h>
 #endif
 #endif
