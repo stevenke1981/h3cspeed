@@ -52,6 +52,9 @@ class ProjectMetadataTest(unittest.TestCase):
             "the minimal CUDA image must install Git before checkout so "
             "runtime provenance has a real repository",
         )
+        self.assertIn('safe.directory "$GITHUB_WORKSPACE"', binary)
+        self.assertIn('git rev-parse HEAD)" = "$GITHUB_SHA"', binary)
+        self.assertIn('git status --porcelain --untracked-files=all', binary)
 
     def test_versions_and_upstream_pin_are_consistent(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
