@@ -70,3 +70,36 @@ Synthetic media and 22-frame smokes prove only the harness. A performance
 claim requires both engines to complete the fixed 124-frame contract, one cold
 plus three warm trials, immutable pre/post hashes, backend traces, full media
 QA and human five-frame review. Until then matched A/B remains `NOT_RUN`.
+
+## PERF-002C isolated engine smoke
+
+`run_perf002_smoke.py` executes one engine in its own process, output directory
+and private log. Its private command config provides:
+
+- `engine`: `h3cspeed` or `comfyui`;
+- an absolute `argv` list (never stored in the result);
+- `command_artifacts` entries that bind `argv[0]` and the executable driver
+  back to SHA-256 artifacts in the immutable engine manifest;
+- the same private `bindings`, `reference_png` and `prompt_file` used by the
+  immutable manifest;
+- distinct `output_media`, `scheduler_trace` and `attention_trace` paths;
+- `protected_roots` for the h3cspeed source, ComfyUI and model directories;
+- a small allowlisted `environment` object.
+
+The adapter rehashes all bound inputs before and after the child process,
+rejects output paths inside the three protected roots, runs without a shell,
+and requires the 864x480/22-frame/24 fps/2-step smoke media contract. It accepts
+the smoke only when scheduler evidence is `dual_clock_euler/native_flow` with
+12/3 shifts and the attention trace records real Sage hits with zero fallback.
+
+```powershell
+python scripts/run_perf002_smoke.py `
+  --manifest E:\private\perf002\evidence\input-manifest.json `
+  --command-config E:\private\perf002\h3cspeed-smoke.private.json `
+  --output-dir E:\private\perf002\h3cspeed-smoke
+```
+
+`SMOKE_PASS` is an individual process, media and trace result only. The result
+always keeps `matched_ab_status: NOT_RUN`; it cannot establish throughput or
+quality parity. Run ComfyUI with a separate config and directory. Neither
+engine reads or overwrites the other's output.

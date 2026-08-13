@@ -87,11 +87,16 @@ def safe_regular(path: Path, label: str) -> Path:
     return candidate
 
 
-def safe_output_directory(path: Path) -> Path:
-    _reject_link_chain(path, "output directory")
+def safe_existing_directory(path: Path, label: str) -> Path:
+    _reject_link_chain(path, label)
     candidate = path.resolve(strict=True)
     if not candidate.is_dir():
-        raise ContractError("output directory must be an existing directory")
+        raise ContractError(f"{label} must be an existing directory")
+    return candidate
+
+
+def safe_output_directory(path: Path) -> Path:
+    candidate = safe_existing_directory(path, "output directory")
     try:
         candidate.relative_to(PROJECT_ROOT)
     except ValueError:
@@ -387,8 +392,20 @@ def _run(command: list[str], *, binary: bool = False) -> bytes | str:
     return completed.stdout
 
 
-def validate_media(ffmpeg: str, ffprobe: str, media: Path,
-                   sample_directory: Path) -> dict[str, Any]:
+def validate_media_contract(
+    ffmpeg: str,
+    ffprobe: str,
+    media: Path,
+    sample_directory: Path,
+    *,
+    frames: int,
+    duration_range: tuple[float, float],
+    sample_frames: tuple[int, ...],
+) -> dict[str, Any]:
+    if (frames <= 0 or duration_range[0] < 0 or duration_range[0] > duration_range[1] or
+            not sample_frames or len(set(sample_frames)) != len(sample_frames) or
+            any(frame < 0 or frame >= frames for frame in sample_frames)):
+        raise ContractError("media contract frames, duration, or samples are invalid")
     media = safe_regular(media, "media")
     sample_directory = safe_output_directory(sample_directory)
     raw = _run([ffprobe, "-v", "error", "-show_streams", "-show_format",
@@ -401,8 +418,8 @@ def validate_media(ffmpeg: str, ffprobe: str, media: Path,
         raise ContractError("media must contain video and audio")
     if (video.get("codec_name"), video.get("width"), video.get("height"),
             video.get("r_frame_rate"), int(video.get("nb_read_frames", 0))) != (
-            "h264", 864, 480, "24/1", 124):
-        raise ContractError("video does not match 864x480 H.264 124f/24fps")
+            "h264", 864, 480, "24/1", frames):
+        raise ContractError(f"video does not match 864x480 H.264 {frames}f/24fps")
     if audio.get("codec_name") != "aac" or int(audio.get("sample_rate", 0)) != 32000:
         raise ContractError("audio must be AAC at 32 kHz")
     if int(audio.get("channels", 0)) != 2:
@@ -416,7 +433,7 @@ def validate_media(ffmpeg: str, ffprobe: str, media: Path,
     if not pcm or not any(pcm):
         raise ContractError("decoded audio is empty or silent")
     frame_hashes: dict[str, str] = {}
-    for frame in (0, 31, 62, 93, 123):
+    for frame in sample_frames:
         name = f"frame-{frame + 1:03d}.png"
         destination = sample_directory / name
         if destination.exists() or destination.is_symlink():
@@ -431,17 +448,25 @@ def validate_media(ffmpeg: str, ffprobe: str, media: Path,
         _exclusive_write(destination, frame_png)
         frame_hashes[name] = sha256_file(safe_regular(destination, name))
     duration = float(probe.get("format", {}).get("duration", 0.0))
-    if not math.isfinite(duration) or not (5.14 <= duration <= 5.20):
-        raise ContractError("media duration is outside the raw H3 124-frame contract")
+    if not math.isfinite(duration) or not (duration_range[0] <= duration <= duration_range[1]):
+        raise ContractError("media duration is outside the requested raw H3 contract")
     return {
         "sha256": sha256_file(media), "bytes": media.stat().st_size,
         "video": {"codec": "h264", "width": 864, "height": 480,
-                  "fps": "24/1", "frames": 124},
+                  "fps": "24/1", "frames": frames},
         "audio": {"codec": "aac", "sample_rate": 32000, "channels": 2,
                   "decoded_pcm_bytes": len(pcm), "non_silent": True},
         "duration_seconds": duration, "frame_hashes": frame_hashes,
         "full_decode": True, "visual_review": "MANUAL_REQUIRED",
     }
+
+
+def validate_media(ffmpeg: str, ffprobe: str, media: Path,
+                   sample_directory: Path) -> dict[str, Any]:
+    return validate_media_contract(
+        ffmpeg, ffprobe, media, sample_directory, frames=124,
+        duration_range=(5.14, 5.20), sample_frames=(0, 31, 62, 93, 123),
+    )
 
 
 def validate_result(value: Any, input_digest: str) -> dict[str, Any]:

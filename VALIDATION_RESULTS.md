@@ -228,3 +228,18 @@ calling this an architecture-wide production release.
 - Matched 864x480/124-frame/8-step cold plus three-warm A/B: NOT RUN.
 - Scheduler sigma/raw-audio evidence and actual Sage hit/fallback traces:
   NOT RUN. No performance, quality-parity or speedup claim is made.
+
+## PERF-002C isolated 22-frame adapter (2026-08-14)
+
+- Synthetic child-process adapter: PASS. It generated 864x480 H.264/AAC media
+  with 22 frames at 24 fps, emitted exact dual-clock 12/3 scheduler evidence
+  and a Sage trace with hits and zero fallbacks, then passed full media/audio
+  decode and five-frame hashing.
+- Pre/post model, conditioning, runtime, prompt and reference bindings: PASS in
+  the synthetic process test; no absolute path, raw prompt, argv or environment
+  is present in the result.
+- Output/source/ComfyUI/model isolation and Sage-fallback rejection: PASS in
+  focused tests.
+- Real h3cspeed 22-frame/2-step smoke: NOT RUN.
+- Real ComfyUI 22-frame/2-step smoke: NOT RUN.
+- Matched A/B timing and quality conclusion: NOT RUN.

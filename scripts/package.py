@@ -54,7 +54,8 @@ def excluded(relative: Path) -> bool:
     name = relative.name.lower()
     if name.startswith("h3-profile-") and name.endswith(".json"):
         return True
-    if name == "input-manifest.json" or name.endswith("-run-result.json"):
+    if (name == "input-manifest.json" or name.endswith("-run-result.json") or
+            name.endswith("-smoke-result.json")):
         return True
     if (name in EXCLUDED_SECRET_NAMES or name.startswith((
             "hf_token", "huggingface_token"))):

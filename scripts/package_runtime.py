@@ -38,6 +38,7 @@ COMMON_SCRIPTS = (
     "scripts/fast-quality-3070ti-8gb.sh",
     "scripts/validate_profile_report.py",
     "scripts/run_perf002_ab.py",
+    "scripts/run_perf002_smoke.py",
     "scripts/validate_perf002_manifest.py",
 )
 COMMON_PROFILES = (

@@ -108,6 +108,7 @@ class ProjectMetadataTest(unittest.TestCase):
                 Path("profile/h3-profile-123-1-h3_dit.json"),
                 Path("input-manifest.json"),
                 Path("h3cspeed-run-result.json"),
+                Path("h3cspeed-smoke-result.json"),
                 Path("prompt.embedding.bf16"),
                 Path("models/checkpoint.safetensors"),
                 Path("models/checkpoint.gguf"),
@@ -129,6 +130,7 @@ class ProjectMetadataTest(unittest.TestCase):
         self.assertIn("h3-profile-*.json", gitignore)
         self.assertIn("input-manifest.json", gitignore)
         self.assertIn("*-run-result.json", gitignore)
+        self.assertIn("*-smoke-result.json", gitignore)
 
     def test_upstream_overlay_ships_its_mit_license(self) -> None:
         license_path = ROOT / "licenses/antirez-h3.c-LICENSE"

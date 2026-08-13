@@ -20,6 +20,7 @@ h3cspeed-keyframe-*/
 h3-profile-*.json
 input-manifest.json
 *-run-result.json
+*-smoke-result.json
 
 # Local model/checkpoint payloads. The quantized-model preparer may create
 # hardlinks, so an accidentally repo-local output root must remain untracked.

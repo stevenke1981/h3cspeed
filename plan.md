@@ -471,7 +471,7 @@ traffic counters and media QA evidence.
 | ID | Change | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
 | PERF-001 | Wall/I/O/H2D/wait profiler + JSON report | none | >=95% wall accounting, <2% disabled overhead |
-| PERF-002 | Reproducible ComfyUI/h3cspeed A/B manifest/driver | PERF-001 | 002A/B manifest + synthetic media harness implemented; real dual-engine A/B `NOT_RUN` |
+| PERF-002 | Reproducible ComfyUI/h3cspeed A/B manifest/driver | PERF-001 | 002A/B manifest/media + 002C isolated 22f adapter implemented; real engine runs `NOT_RUN` |
 | PERF-003 | F32 hidden-pool state-size spike + tile/layer parity harness | PERF-001 | ownership/memory model + same-latent 22-frame proof |
 | PERF-004 | Layer-major F32 VAE execution via verified overlay | PERF-003 | <40 GiB upload target, >=3x VAE wall speedup |
 | PERF-005 | Double-buffered async refill primitives | PERF-001 | event-safe focused overlap trace |
@@ -497,11 +497,12 @@ traffic counters and media QA evidence.
 
 ## 11. Immediate next change
 
-Continue **PERF-002** from its bounded 002A/B walking skeleton. Immutable input
-manifests now hash actual bound files without retaining private paths or prompt
-text, and the media harness verifies 124-frame video/audio decode plus five
-sample hashes. The next change is a real 22-frame two-engine smoke adapter with
-whole-process stage timers and verified scheduler/Sage traces. The matched
+Continue **PERF-002** by supplying real h3cspeed and ComfyUI trace producers to
+the isolated 002C adapter. Immutable input manifests hash actual bound files
+without retaining private paths or prompt text; 002C now rechecks those inputs
+before/after each engine, verifies 22-frame media and requires scheduler/Sage
+evidence. The adapter and synthetic child PASS, but both real engine runs and
+whole-process stage timers remain `NOT_RUN`. The matched
 864x480 124-frame 8-step cold plus three-warm A/B, PERF-001 95% critical-path
 coverage and 22-frame disabled-overhead gate remain `NOT_RUN`; they must not be
 inferred from the schema or synthetic media PASS.
