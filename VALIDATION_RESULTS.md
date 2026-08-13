@@ -1,6 +1,6 @@
 # h3cspeed local validation results
 
-- Generated: 2026-08-13 (Asia/Taipei)
+- Generated: 2026-08-14 (Asia/Taipei)
 - Platform: native Windows x64
 - GPU: NVIDIA GeForce RTX 3070 Ti, CUDA `sm_86`, 8.00 GiB VRAM
 - System RAM: 31.81 GiB
@@ -20,7 +20,7 @@
 - Portable overlay configure/build and CTest: 11/11.
 - Native CUDA/MSVC build and link: `h3cspeed.exe`,
   `h3cspeed-cuda-info.exe`, library, and focused tests.
-- Native CTest: 17/17. This includes CUDA numeric-layout, ConvRot, NVFP4,
+- Native CTest baseline before PERF-001 registration: 17/17. This includes CUDA numeric-layout, ConvRot, NVFP4,
   converted-weight eviction/reload and scale-broadcast
   regressions, 64-bit `pread`/`stat` over a 5 GiB sparse
   file, POSIX spawn redirection, and real FFmpeg RGB+PCM encode, FFprobe, image
@@ -171,6 +171,23 @@
   124-frame <40 GiB / >=3x wall gates remain pending PERF-001
   instrumentation; the tile-major device peak matches the accepted 864x480
   production baseline exactly.
+- The PERF-001 machine-readable profiler smoke used Windows 10 build 19045,
+  RTX 3070 Ti 8 GiB (`sm_86`), driver 596.36, CUDA 13.2.78, MSVC
+  19.44.35227, a Release architecture-86 `build-quant`, and
+  `H3_PROFILE=1` plus a unique `H3_PROFILE_JSON_DIR`. Running
+  `build-quant\test_cuda_scale_add.exe` exited 0 and emitted a complete
+  schema-v1 per-context JSON report; `scripts/validate_profile_report.py`
+  parsed it successfully. The report separated three H2D enqueues (80 bytes),
+  four allocations, compute/upload stream waits, device event time, and four
+  intentional phase-retire frees (112 bytes), while capacity-LRU and error
+  cleanup stayed zero. The tiny smoke intentionally reports only 0.04% host
+  accounting coverage because CUDA context startup dominates it; it is a
+  producer/schema/runtime PASS, not the plan's 95% long-phase coverage or
+  profiling-disabled <2% overhead PASS. The full Windows CUDA CTest run passed
+  18 tests with the model-dependent layer-major VAE test explicitly skipped;
+  the portable overlay passed 13/13 and API coverage remained 103/103.
+  Compute Sanitizer on the same focused scale-add test reported memcheck 0
+  errors and racecheck 0 hazards, errors or warnings.
 
 Observed low-VRAM policy on the acceptance machine:
 

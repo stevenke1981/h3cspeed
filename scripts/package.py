@@ -52,6 +52,8 @@ def excluded(relative: Path) -> bool:
     if any(part.startswith("h3cspeed-keyframe-") for part in parts):
         return True
     name = relative.name.lower()
+    if name.startswith("h3-profile-") and name.endswith(".json"):
+        return True
     if (name in EXCLUDED_SECRET_NAMES or name.startswith((
             "hf_token", "huggingface_token"))):
         return True

@@ -1,8 +1,8 @@
 # h3cspeed MiniMax H3 performance plan
 
-Status: **approved implementation roadmap; optimizations are not yet implemented**
+Status: **implementation in progress**
 
-Last updated: 2026-08-13
+Last updated: 2026-08-14
 
 ## 1. Objective
 
@@ -122,6 +122,13 @@ focused numerical, memory-safety and performance gates pass.
 
 ### Phase P0 - reproducible profiler and matched A/B harness
 
+Implementation status:
+
+- `PERF-001` private CUDA/offload profile schema and per-context JSON writer:
+  implemented in the current change set; real-GPU coverage and disabled-overhead
+  gates remain to be measured.
+- The matched ComfyUI A/B driver and end-to-end stage timers remain pending.
+
 Deliverables:
 
 1. Extend `h3_gpu_stats` without breaking existing callers, or add a versioned
@@ -156,6 +163,14 @@ Verification:
   audio decode and five-frame visual QA before timing is compared.
 
 ### Phase P1 - collapse Video VAE weight traffic
+
+Implementation status:
+
+- The opt-in F32 layer-major walking skeleton and same-latent parity harness are
+  implemented. The measured 22-frame 864x480 smoke was bit-exact and reduced
+  Video VAE uploads from 72.23 GiB to 9.03 GiB (87.5%).
+- The 124-frame `<40 GiB` traffic and `>=3x` wall-time gates remain pending;
+  `PERF-001` telemetry is required before those targets can be accepted.
 
 The model stores the Video VAE weights as F16, but the current loader expands
 them to approximately 9.2 GiB of F32 device-ready data. This makes a nominally
@@ -482,8 +497,10 @@ traffic counters and media QA evidence.
 
 ## 11. Immediate next change
 
-Implement **PERF-001** first. The current counters identify traffic volume but
-cannot attribute the roughly 4-hour gap between reported DiT compute time and
-end-to-end wall time. Fine-grained, low-overhead wall/I/O/H2D/wait accounting is
-the prerequisite for deciding whether VAE reordering, async refill or cache
-tuning provides the largest verified return.
+Finish the remaining **PERF-001** acceptance evidence, then implement
+**PERF-002**. The private per-context producer/schema now attributes CUDA-side
+wall/I/O/H2D/wait activity without changing the public C API, but the matched
+22-frame driver, whole-process stage timers, immutable input manifest, 95%
+critical-path coverage and disabled-overhead gate remain pending. Those results
+must select whether VAE reordering, async refill or cache tuning provides the
+largest verified return.

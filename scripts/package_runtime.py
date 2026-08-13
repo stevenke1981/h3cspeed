@@ -36,6 +36,7 @@ COMMON_SCRIPTS = (
     "scripts/run-3070ti-8gb.sh",
     "scripts/smoke-3070ti-8gb.sh",
     "scripts/fast-quality-3070ti-8gb.sh",
+    "scripts/validate_profile_report.py",
 )
 COMMON_PROFILES = (
     "profiles/rtx3070ti-8gb.env",

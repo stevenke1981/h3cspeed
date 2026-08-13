@@ -2,6 +2,7 @@
 #include "h3_quantized_weights.h"
 
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cmath>
 #include <cuda_fp16.h>
@@ -30,7 +31,103 @@ static int environment_flag_enabled(const char *name) {
            strcasecmp(value, "no") != 0;
 }
 
-static int read_exact(int descriptor, void *buffer, size_t bytes,
+enum h3cspeed_profile_stream {
+    H3CSPEED_PROFILE_STREAM_COMPUTE = 0,
+    H3CSPEED_PROFILE_STREAM_UPLOAD = 1
+};
+
+static std::atomic<uint64_t> profile_context_next{1};
+
+static uint64_t next_profile_context_id(void) {
+    uint64_t value = profile_context_next.fetch_add(1,
+                                                     std::memory_order_relaxed);
+    return value ? value : profile_context_next.fetch_add(
+        1, std::memory_order_relaxed);
+}
+
+static void profile_update(h3_gpu *gpu,
+                           void (*update)(h3cspeed_profile_metrics *,
+                                          uint64_t, double),
+                           uint64_t bytes, double seconds) {
+    if (!gpu || !gpu->profile_enabled || !update) return;
+    pthread_mutex_lock(&gpu->lock);
+    update(&gpu->profile_metrics, bytes, seconds);
+    pthread_mutex_unlock(&gpu->lock);
+}
+
+static void profile_file_read(h3cspeed_profile_metrics *metrics,
+                              uint64_t bytes, double seconds) {
+    metrics->file_read_calls++;
+    metrics->file_read_bytes += bytes;
+    metrics->file_read_seconds += seconds;
+}
+
+static void profile_pageable_copy(h3cspeed_profile_metrics *metrics,
+                                  uint64_t bytes, double seconds) {
+    metrics->pageable_copy_calls++;
+    metrics->pageable_copy_bytes += bytes;
+    metrics->pageable_copy_seconds += seconds;
+}
+
+static void profile_h2d_enqueue(h3cspeed_profile_metrics *metrics,
+                                uint64_t bytes, double seconds) {
+    metrics->h2d_enqueue_calls++;
+    metrics->h2d_enqueue_bytes += bytes;
+    metrics->h2d_enqueue_seconds += seconds;
+}
+
+static void profile_allocation(h3cspeed_profile_metrics *metrics,
+                               uint64_t bytes, double seconds) {
+    (void)bytes;
+    metrics->allocation_calls++;
+    metrics->allocation_seconds += seconds;
+}
+
+static cudaError_t profiled_stream_synchronize(
+        h3_gpu *gpu, cudaStream_t stream, h3cspeed_profile_stream kind) {
+    if (!gpu || !gpu->profile_enabled) return cudaStreamSynchronize(stream);
+    double started = h3cspeed_profile_now_seconds();
+    cudaError_t status = cudaStreamSynchronize(stream);
+    double elapsed = h3cspeed_profile_now_seconds() - started;
+    pthread_mutex_lock(&gpu->lock);
+    if (kind == H3CSPEED_PROFILE_STREAM_COMPUTE) {
+        gpu->profile_metrics.compute_stream_syncs++;
+        gpu->profile_metrics.compute_stream_wait_seconds += elapsed;
+    } else {
+        gpu->profile_metrics.upload_stream_syncs++;
+        gpu->profile_metrics.upload_stream_wait_seconds += elapsed;
+    }
+    pthread_mutex_unlock(&gpu->lock);
+    return status;
+}
+
+static cudaError_t profiled_event_synchronize(h3_gpu *gpu, cudaEvent_t event) {
+    if (!gpu || !gpu->profile_enabled) return cudaEventSynchronize(event);
+    double started = h3cspeed_profile_now_seconds();
+    cudaError_t status = cudaEventSynchronize(event);
+    double elapsed = h3cspeed_profile_now_seconds() - started;
+    pthread_mutex_lock(&gpu->lock);
+    gpu->profile_metrics.event_syncs++;
+    gpu->profile_metrics.event_wait_seconds += elapsed;
+    pthread_mutex_unlock(&gpu->lock);
+    return status;
+}
+
+static cudaError_t profiled_h2d_async(h3_gpu *gpu, void *destination,
+                                      const void *source, size_t bytes,
+                                      cudaStream_t stream) {
+    if (!gpu || !gpu->profile_enabled)
+        return cudaMemcpyAsync(destination, source, bytes,
+                               cudaMemcpyHostToDevice, stream);
+    double started = h3cspeed_profile_now_seconds();
+    cudaError_t status = cudaMemcpyAsync(destination, source, bytes,
+                                         cudaMemcpyHostToDevice, stream);
+    profile_update(gpu, profile_h2d_enqueue, (uint64_t)bytes,
+                   h3cspeed_profile_now_seconds() - started);
+    return status;
+}
+
+static int read_exact(h3_gpu *gpu, int descriptor, void *buffer, size_t bytes,
                       uint64_t offset, char *error, size_t error_size);
 static int convrot_group_valid(uint32_t group_size);
 
@@ -88,7 +185,7 @@ static int tensor_event_synchronize(h3_gpu *gpu, h3_gpu_tensor *tensor,
     cudaEvent_t event = use_event ? tensor->last_use : tensor->ready;
     pthread_mutex_unlock(&tensor->lock);
     if (!valid) return 1;
-    return h3cspeed_cuda_ok(gpu, cudaEventSynchronize(event), operation);
+    return h3cspeed_cuda_ok(gpu, profiled_event_synchronize(gpu, event), operation);
 }
 
 static void track_device_allocation(h3_gpu *gpu, size_t bytes) {
@@ -112,8 +209,10 @@ static void track_device_release(h3_gpu *gpu, size_t bytes) {
 
 static int release_tensor_device_locked(h3_gpu *gpu, h3_gpu_tensor *tensor,
                                         int wait_for_use,
-                                        int count_eviction) {
+                                        int legacy_count_eviction,
+                                        h3cspeed_profile_eviction_reason reason) {
     if (!gpu || !tensor || !tensor->data) return 1;
+    double started = gpu->profile_enabled ? h3cspeed_profile_now_seconds() : 0.0;
     if (wait_for_use) {
         if (!tensor_event_synchronize(gpu, tensor, 0,
                                       "wait for weight upload before eviction") ||
@@ -132,12 +231,19 @@ static int release_tensor_device_locked(h3_gpu *gpu, h3_gpu_tensor *tensor,
     if (tensor->offloadable) {
         gpu->resident_weight_bytes = gpu->resident_weight_bytes >= tensor->bytes ?
             gpu->resident_weight_bytes - tensor->bytes : 0;
-        if (count_eviction) {
+        if (legacy_count_eviction) {
             gpu->offload_evictions++;
             gpu->offload_evicted_bytes += tensor->bytes;
         }
     }
     track_device_release(gpu, tensor->bytes);
+    if (gpu->profile_enabled) {
+        pthread_mutex_lock(&gpu->lock);
+        (void)h3cspeed_profile_record_eviction(
+            &gpu->profile_metrics, reason, (uint64_t)tensor->bytes,
+            h3cspeed_profile_now_seconds() - started);
+        pthread_mutex_unlock(&gpu->lock);
+    }
     return 1;
 }
 
@@ -189,7 +295,9 @@ static int evict_until_fit_locked(h3_gpu *gpu, size_t bytes,
             h3cspeed_set_error(gpu, "CUDA offload allocation", detail);
             return 0;
         }
-        if (!release_tensor_device_locked(gpu, candidate, 1, 1)) return 0;
+        if (!release_tensor_device_locked(
+                gpu, candidate, 1, 1,
+                H3CSPEED_PROFILE_EVICTION_CAPACITY_LRU)) return 0;
     }
     return 1;
 }
@@ -207,7 +315,9 @@ static int trim_offload_cache_locked(h3_gpu *gpu) {
                 "non-offloadable activations exceed the configured VRAM budget");
             return 0;
         }
-        if (!release_tensor_device_locked(gpu, candidate, 1, 1)) return 0;
+        if (!release_tensor_device_locked(
+                gpu, candidate, 1, 1,
+                H3CSPEED_PROFILE_EVICTION_CAPACITY_LRU)) return 0;
     }
     return 1;
 }
@@ -220,14 +330,26 @@ static int device_allocate_locked(h3_gpu *gpu, void **pointer, size_t bytes,
     if (!bytes) return 1;
     if (!evict_until_fit_locked(gpu, bytes, weight_allocation,
                                 protected_tensor)) return 0;
+    double allocation_started = gpu->profile_enabled ?
+        h3cspeed_profile_now_seconds() : 0.0;
     cudaError_t status = cudaMalloc(pointer, bytes);
+    if (gpu->profile_enabled)
+        profile_update(gpu, profile_allocation, (uint64_t)bytes,
+                       h3cspeed_profile_now_seconds() - allocation_started);
     if (status != cudaSuccess && gpu->offload.enabled) {
         (void)cudaGetLastError();
         h3_gpu_tensor *candidate = nullptr;
         while ((candidate = eviction_candidate_locked(gpu, protected_tensor))) {
-            if (!release_tensor_device_locked(gpu, candidate, 1, 1)) return 0;
+            if (!release_tensor_device_locked(
+                    gpu, candidate, 1, 1,
+                    H3CSPEED_PROFILE_EVICTION_CAPACITY_LRU)) return 0;
         }
+        allocation_started = gpu->profile_enabled ?
+            h3cspeed_profile_now_seconds() : 0.0;
         status = cudaMalloc(pointer, bytes);
+        if (gpu->profile_enabled)
+            profile_update(gpu, profile_allocation, (uint64_t)bytes,
+                           h3cspeed_profile_now_seconds() - allocation_started);
     }
     if (!h3cspeed_cuda_ok(gpu, status, "cudaMalloc tensor")) return 0;
     track_device_allocation(gpu, bytes);
@@ -354,9 +476,8 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
         host_lru_append_locked(gpu, tensor);
     if (tensor->host_data && tensor->host_valid && tensor->host_pinned) {
         if (!h3cspeed_cuda_ok(gpu,
-            cudaMemcpyAsync(tensor->data, tensor->host_data,
-                            tensor->source_bytes, cudaMemcpyHostToDevice,
-                            gpu->upload_stream),
+            profiled_h2d_async(gpu, tensor->data, tensor->host_data,
+                               tensor->source_bytes, gpu->upload_stream),
             "upload pinned host weight")) return 0;
     } else {
         pthread_mutex_lock(&gpu->staging_lock);
@@ -391,7 +512,7 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
                                     gpu->staging_bytes);
             if (descriptor >= 0) {
                 char read_error[256] = {0};
-                if (!read_exact(descriptor, gpu->staging, chunk,
+                if (!read_exact(gpu, descriptor, gpu->staging, chunk,
                                 tensor->source_offset + done,
                                 read_error, sizeof(read_error))) {
                     h3cspeed_set_error(gpu, "file-backed weight read", read_error);
@@ -399,17 +520,24 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
                     break;
                 }
             } else {
+                double copy_started = gpu->profile_enabled ?
+                    h3cspeed_profile_now_seconds() : 0.0;
                 memcpy(gpu->staging,
                        static_cast<const unsigned char *>(tensor->host_data) + done,
                        chunk);
+                if (gpu->profile_enabled)
+                    profile_update(gpu, profile_pageable_copy, (uint64_t)chunk,
+                                   h3cspeed_profile_now_seconds() - copy_started);
             }
             if (!h3cspeed_cuda_ok(gpu,
-                cudaMemcpyAsync(static_cast<unsigned char *>(tensor->data) + done,
-                                gpu->staging, chunk, cudaMemcpyHostToDevice,
-                                gpu->upload_stream),
+                profiled_h2d_async(
+                    gpu, static_cast<unsigned char *>(tensor->data) + done,
+                    gpu->staging, chunk, gpu->upload_stream),
                 "staged host weight upload") ||
                 !h3cspeed_cuda_ok(gpu,
-                    cudaStreamSynchronize(gpu->upload_stream),
+                    profiled_stream_synchronize(
+                        gpu, gpu->upload_stream,
+                        H3CSPEED_PROFILE_STREAM_UPLOAD),
                     "staged host weight synchronization")) {
                 ok = 0;
                 break;
@@ -456,7 +584,10 @@ int h3cspeed_tensor_prepare(h3_gpu *gpu, h3_gpu_tensor *tensor) {
         if (!device_allocate_locked(gpu, &tensor->data, tensor->bytes, 1,
                                     tensor) ||
             !upload_weight_locked(gpu, tensor)) {
-            if (tensor->data) (void)release_tensor_device_locked(gpu, tensor, 0, 0);
+            if (tensor->data)
+                (void)release_tensor_device_locked(
+                    gpu, tensor, 0, 0,
+                    H3CSPEED_PROFILE_EVICTION_ERROR_CLEANUP);
             pthread_mutex_unlock(&gpu->offload_lock);
             return 0;
         }
@@ -482,13 +613,17 @@ void h3cspeed_operation_complete(h3_gpu *gpu) {
     pthread_mutex_lock(&gpu->offload_lock);
     uint64_t completed_epoch = gpu->operation_epoch;
     int all_recorded = 1;
+    uint64_t recorded_count = 0;
     for (h3_gpu_tensor *tensor = gpu->lru_head; tensor;
          tensor = tensor->lru_next) {
         if (!tensor->data || tensor->pin_epoch != completed_epoch) continue;
         pthread_mutex_lock(&tensor->lock);
         cudaError_t status = cudaEventRecord(tensor->last_use,
                                               gpu->compute_stream);
-        if (status == cudaSuccess) tensor->last_use_valid = 1;
+        if (status == cudaSuccess) {
+            tensor->last_use_valid = 1;
+            recorded_count++;
+        }
         pthread_mutex_unlock(&tensor->lock);
         if (status != cudaSuccess) {
             all_recorded = 0;
@@ -504,6 +639,11 @@ void h3cspeed_operation_complete(h3_gpu *gpu) {
         if (!gpu->operation_epoch) gpu->operation_epoch = 1;
     }
     pthread_mutex_unlock(&gpu->offload_lock);
+    if (gpu->profile_enabled && recorded_count) {
+        pthread_mutex_lock(&gpu->lock);
+        gpu->profile_metrics.last_use_fence_count += recorded_count;
+        pthread_mutex_unlock(&gpu->lock);
+    }
 }
 
 static h3_gpu_tensor *tensor_new_internal(h3_gpu *gpu, h3_gpu_dtype dtype,
@@ -570,6 +710,22 @@ extern "C" h3_gpu *h3_gpu_create(const char *shader_source_path,
     pthread_mutex_init(&gpu->scratch_lock, nullptr);
     pthread_mutex_init(&gpu->offload_lock, nullptr);
     pthread_mutex_init(&gpu->staging_lock, nullptr);
+    const char *profile_json_dir = getenv("H3_PROFILE_JSON_DIR");
+    gpu->profile_enabled = environment_flag_enabled("H3_PROFILE") ||
+                           (profile_json_dir && *profile_json_dir);
+    gpu->profile_context_id = next_profile_context_id();
+    gpu->profile_context_start_seconds = h3cspeed_profile_now_seconds();
+    h3cspeed_profile_metrics_init(&gpu->profile_metrics);
+    if (profile_json_dir && strlen(profile_json_dir) >=
+                                sizeof(gpu->profile_json_dir)) {
+        h3cspeed_set_error(gpu, "H3_PROFILE_JSON_DIR", "path is too long");
+        if (error && error_size) snprintf(error, error_size, "%s", gpu->error);
+        h3_gpu_free(gpu);
+        return nullptr;
+    }
+    if (profile_json_dir && *profile_json_dir)
+        snprintf(gpu->profile_json_dir, sizeof(gpu->profile_json_dir), "%s",
+                 profile_json_dir);
     gpu->operation_epoch = 1;
     const char *device_env = getenv("H3_CUDA_DEVICE");
     gpu->device = 0;
@@ -657,19 +813,66 @@ extern "C" h3_gpu *h3_gpu_create(const char *shader_source_path,
         h3_gpu_free(gpu);
         return nullptr;
     }
-    gpu->profile_enabled = environment_flag_enabled("H3_PROFILE");
     (void)cudaEventCreate(&gpu->profile_start);
     (void)cudaEventCreate(&gpu->profile_mark);
     if (error && error_size) error[0] = '\0';
     return gpu;
 }
 
+static void profile_write_final_report(h3_gpu *gpu) {
+    if (!gpu || !gpu->profile_enabled || !gpu->profile_json_dir[0] ||
+        !gpu->profile_context_id) return;
+    h3cspeed_profile_report report;
+    memset(&report, 0, sizeof(report));
+    pthread_mutex_lock(&gpu->lock);
+    report.context_id = gpu->profile_context_id;
+    report.device = gpu->device;
+    report.sm_major = gpu->properties.major;
+    report.sm_minor = gpu->properties.minor;
+    report.label = h3cspeed_profile_safe_label(gpu->profile_label);
+    report.complete = gpu->error[0] == '\0';
+    report.wall_seconds = std::max(
+        0.0, h3cspeed_profile_now_seconds() - gpu->profile_context_start_seconds);
+    report.metrics = gpu->profile_metrics;
+    report.device_peak_bytes = gpu->stats.peak_live_bytes;
+    report.resident_weight_peak_bytes = gpu->peak_resident_weight_bytes;
+    report.host_cache_peak_bytes = gpu->peak_host_cache_bytes;
+    report.offload_uploads = gpu->offload_uploads;
+    report.offload_upload_bytes = gpu->offload_upload_bytes;
+    report.offload_evictions = gpu->offload_evictions;
+    report.offload_evicted_bytes = gpu->offload_evicted_bytes;
+    report.file_fallback_reads = gpu->file_fallback_reads;
+    report.file_fallback_bytes = gpu->file_fallback_bytes;
+    report.direct_dispatches = gpu->stats.direct_dispatches;
+    report.linear_dispatches = gpu->stats.mps_linear_dispatches;
+    report.convolution_dispatches = gpu->stats.mps_conv_dispatches;
+    report.attention_dispatches = gpu->stats.mps_sdpa_dispatches;
+    pthread_mutex_unlock(&gpu->lock);
+
+    char output_path[1024] = {0};
+    char profile_error[256] = {0};
+    if (!h3cspeed_profile_write_json_directory(
+            gpu->profile_json_dir, &report, output_path, sizeof(output_path),
+            profile_error, sizeof(profile_error))) {
+        fprintf(stderr, "h3cspeed CUDA profile JSON warning: %s\n",
+                profile_error[0] ? profile_error : "write failed");
+        return;
+    }
+    fprintf(stderr, "h3cspeed CUDA profile JSON: %s\n", output_path);
+}
+
 extern "C" void h3_gpu_free(h3_gpu *gpu) {
     if (!gpu) return;
     (void)cudaSetDevice(gpu->device);
-    if (gpu->compute_stream) (void)cudaStreamSynchronize(gpu->compute_stream);
-    if (gpu->upload_stream) (void)cudaStreamSynchronize(gpu->upload_stream);
+    if (gpu->compute_stream)
+        (void)profiled_stream_synchronize(
+            gpu, gpu->compute_stream, H3CSPEED_PROFILE_STREAM_COMPUTE);
+    if (gpu->upload_stream)
+        (void)profiled_stream_synchronize(
+            gpu, gpu->upload_stream, H3CSPEED_PROFILE_STREAM_UPLOAD);
     if (gpu->profile_enabled || gpu->offload.enabled) {
+        const char *safe_label = h3cspeed_profile_safe_label(gpu->profile_label);
+        const bool has_safe_label = strcmp(safe_label, "redacted") != 0;
         fprintf(stderr,
             "h3cspeed CUDA%s%s%s: device-live=%.2f MiB peak=%.2f MiB "
             "resident-weights=%.2f MiB peak-resident=%.2f MiB "
@@ -678,9 +881,9 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
             "/%.2f GiB host-evictions=%" PRIu64 "/%.2f GiB "
             "file-fallback=%" PRIu64 "/%.2f GiB linear=%" PRIu64
             " conv=%" PRIu64 " sdpa=%" PRIu64 "\n",
-            gpu->profile_label[0] ? " [" : "",
-            gpu->profile_label[0] ? gpu->profile_label : "",
-            gpu->profile_label[0] ? "]" : "",
+            has_safe_label ? " [" : "",
+            has_safe_label ? safe_label : "",
+            has_safe_label ? "]" : "",
             (double)gpu->device_live_bytes / (1024.0 * 1024.0),
             (double)gpu->stats.peak_live_bytes / (1024.0 * 1024.0),
             (double)gpu->resident_weight_bytes / (1024.0 * 1024.0),
@@ -700,6 +903,7 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
             gpu->stats.mps_conv_dispatches,
             gpu->stats.mps_sdpa_dispatches);
     }
+    profile_write_final_report(gpu);
     if (gpu->scratch) cudaFree(gpu->scratch);
     if (gpu->staging) {
         if (gpu->staging_pinned) cudaFreeHost(gpu->staging);
@@ -767,8 +971,8 @@ static h3_gpu_tensor *tensor_from(h3_gpu *gpu, h3_gpu_dtype dtype,
     }
     if (tensor->bytes && values) {
         if (!h3cspeed_cuda_ok(gpu,
-            cudaMemcpyAsync(tensor->data, values, tensor->bytes,
-                            cudaMemcpyHostToDevice, gpu->upload_stream),
+            profiled_h2d_async(gpu, tensor->data, values, tensor->bytes,
+                               gpu->upload_stream),
             "cudaMemcpyAsync tensor upload") ||
             !h3cspeed_tensor_record_upload(tensor)) {
             h3_gpu_tensor_free(tensor);
@@ -796,8 +1000,10 @@ extern "C" h3_gpu_tensor *h3_gpu_tensor_from_u32(h3_gpu *gpu,
     return tensor_from(gpu, H3_GPU_U32, values, elements);
 }
 
-static int read_exact(int descriptor, void *buffer, size_t bytes,
+static int read_exact(h3_gpu *gpu, int descriptor, void *buffer, size_t bytes,
                       uint64_t offset, char *error, size_t error_size) {
+    double started = gpu && gpu->profile_enabled ?
+        h3cspeed_profile_now_seconds() : 0.0;
     unsigned char *target = static_cast<unsigned char *>(buffer);
     size_t done = 0;
     while (done < bytes) {
@@ -812,15 +1018,24 @@ static int read_exact(int descriptor, void *buffer, size_t bytes,
             if (errno == EINTR) continue;
             if (error && error_size) snprintf(error, error_size,
                 "pread failed: %s", strerror(errno));
+            if (gpu && gpu->profile_enabled)
+                profile_update(gpu, profile_file_read, (uint64_t)done,
+                               h3cspeed_profile_now_seconds() - started);
             return 0;
         }
         if (got == 0) {
             if (error && error_size) snprintf(error, error_size,
                 "unexpected end of weight file");
+            if (gpu && gpu->profile_enabled)
+                profile_update(gpu, profile_file_read, (uint64_t)done,
+                               h3cspeed_profile_now_seconds() - started);
             return 0;
         }
         done += (size_t)got;
     }
+    if (gpu && gpu->profile_enabled)
+        profile_update(gpu, profile_file_read, (uint64_t)done,
+                       h3cspeed_profile_now_seconds() - started);
     return 1;
 }
 
@@ -830,9 +1045,13 @@ static int tensor_synchronize_before_host_overwrite_locked(
     h3_gpu *gpu = tensor->gpu;
     if (!gpu->offload.enabled) {
         return h3cspeed_cuda_ok(gpu,
-                   cudaStreamSynchronize(gpu->compute_stream), operation) &&
+                   profiled_stream_synchronize(
+                       gpu, gpu->compute_stream,
+                       H3CSPEED_PROFILE_STREAM_COMPUTE), operation) &&
                h3cspeed_cuda_ok(gpu,
-                   cudaStreamSynchronize(gpu->upload_stream), operation);
+                   profiled_stream_synchronize(
+                       gpu, gpu->upload_stream,
+                       H3CSPEED_PROFILE_STREAM_UPLOAD), operation);
     }
     if (tensor->data && tensor->pin_epoch == gpu->operation_epoch) {
         h3cspeed_set_error(gpu, operation,
@@ -843,7 +1062,9 @@ static int tensor_synchronize_before_host_overwrite_locked(
                                   "wait for tensor upload before refill") ||
         !tensor_event_synchronize(gpu, tensor, 1,
                                   "wait for tensor use before refill")) return 0;
-    if (tensor->data && !release_tensor_device_locked(gpu, tensor, 0, 1)) return 0;
+    if (tensor->data && !release_tensor_device_locked(
+            gpu, tensor, 0, 1,
+            H3CSPEED_PROFILE_EVICTION_PHASE_RETIRE)) return 0;
     return 1;
 }
 
@@ -938,7 +1159,7 @@ static int tensor_read_file(h3_gpu_tensor *tensor, const char *path,
             pthread_mutex_unlock(&tensor->lock);
             if (!tensor->host_data) (void)host_backing_allocate_locked(gpu, tensor);
             if (tensor->host_data) {
-                ok = read_exact(descriptor, tensor->host_data, bytes,
+                ok = read_exact(gpu, descriptor, tensor->host_data, bytes,
                                 file_offset, error, error_size);
                 if (ok && bytes < tensor->bytes)
                     memset(static_cast<unsigned char *>(tensor->host_data) + bytes,
@@ -986,15 +1207,16 @@ static int tensor_read_file(h3_gpu_tensor *tensor, const char *path,
     size_t done = 0;
     while (ok && done < bytes) {
         size_t chunk = std::min(bytes - done, gpu->staging_bytes);
-        if (!read_exact(descriptor, gpu->staging, chunk, file_offset + done,
+        if (!read_exact(gpu, descriptor, gpu->staging, chunk, file_offset + done,
                         error, error_size) ||
             !h3cspeed_cuda_ok(gpu,
-                cudaMemcpyAsync(static_cast<unsigned char *>(tensor->data) + done,
-                                gpu->staging, chunk, cudaMemcpyHostToDevice,
-                                gpu->upload_stream),
+                profiled_h2d_async(
+                    gpu, static_cast<unsigned char *>(tensor->data) + done,
+                    gpu->staging, chunk, gpu->upload_stream),
                 "stream weight upload") ||
             !h3cspeed_cuda_ok(gpu,
-                cudaStreamSynchronize(gpu->upload_stream),
+                profiled_stream_synchronize(
+                    gpu, gpu->upload_stream, H3CSPEED_PROFILE_STREAM_UPLOAD),
                 "weight upload synchronization")) {
             ok = 0;
             break;
@@ -1090,8 +1312,9 @@ extern "C" void h3_gpu_tensor_free(h3_gpu_tensor *tensor) {
     h3_gpu *gpu = tensor->gpu;
     if (gpu) {
         pthread_mutex_lock(&gpu->offload_lock);
-        (void)release_tensor_device_locked(gpu, tensor,
-                                           tensor->offloadable ? 1 : 0, 0);
+        (void)release_tensor_device_locked(
+            gpu, tensor, tensor->offloadable ? 1 : 0, 0,
+            H3CSPEED_PROFILE_EVICTION_PHASE_RETIRE);
         host_backing_release_locked(gpu, tensor);
         free(tensor->source_path);
         tensor->source_path = nullptr;
@@ -1121,9 +1344,13 @@ static int tensor_read_range(const h3_gpu_tensor *tensor, size_t source_offset,
         return 0;
     h3_gpu *gpu = tensor->gpu;
     if (!h3cspeed_tensor_wait(gpu, tensor) ||
-        !h3cspeed_cuda_ok(gpu, cudaStreamSynchronize(gpu->compute_stream),
+        !h3cspeed_cuda_ok(gpu, profiled_stream_synchronize(
+                               gpu, gpu->compute_stream,
+                               H3CSPEED_PROFILE_STREAM_COMPUTE),
                            "read tensor compute synchronization") ||
-        !h3cspeed_cuda_ok(gpu, cudaStreamSynchronize(gpu->upload_stream),
+        !h3cspeed_cuda_ok(gpu, profiled_stream_synchronize(
+                               gpu, gpu->upload_stream,
+                               H3CSPEED_PROFILE_STREAM_UPLOAD),
                            "read tensor upload synchronization")) return 0;
     int ok = h3cspeed_cuda_ok(gpu,
         cudaMemcpy(values,
@@ -1160,15 +1387,20 @@ static int tensor_write_range(h3_gpu_tensor *tensor, size_t destination_offset,
         elements > tensor->elements - destination_offset) return 0;
     h3_gpu *gpu = tensor->gpu;
     if (!h3cspeed_tensor_prepare(gpu, tensor) ||
-        !h3cspeed_cuda_ok(gpu, cudaStreamSynchronize(gpu->compute_stream),
+        !h3cspeed_cuda_ok(gpu, profiled_stream_synchronize(
+                               gpu, gpu->compute_stream,
+                               H3CSPEED_PROFILE_STREAM_COMPUTE),
                            "synchronize tensor before host write") ||
-        !h3cspeed_cuda_ok(gpu, cudaStreamSynchronize(gpu->upload_stream),
+        !h3cspeed_cuda_ok(gpu, profiled_stream_synchronize(
+                               gpu, gpu->upload_stream,
+                               H3CSPEED_PROFILE_STREAM_UPLOAD),
                            "synchronize upload before host write") ||
         !h3cspeed_cuda_ok(gpu,
-            cudaMemcpyAsync(static_cast<unsigned char *>(tensor->data) +
-                                destination_offset * h3cspeed_dtype_size(expected),
-                            values, elements * h3cspeed_dtype_size(expected),
-                            cudaMemcpyHostToDevice, gpu->upload_stream),
+            profiled_h2d_async(
+                gpu, static_cast<unsigned char *>(tensor->data) +
+                         destination_offset * h3cspeed_dtype_size(expected),
+                values, elements * h3cspeed_dtype_size(expected),
+                gpu->upload_stream),
             "cudaMemcpyAsync tensor write") ||
         !h3cspeed_tensor_record_upload(tensor)) return 0;
 
@@ -1223,7 +1455,12 @@ extern "C" int h3_gpu_begin(h3_gpu *gpu) {
     if (!gpu) return 0;
     if (gpu->profile_enabled) {
         clock_gettime(CLOCK_MONOTONIC, &gpu->profile_wall);
-        (void)cudaEventRecord(gpu->profile_start, gpu->compute_stream);
+        cudaError_t status = cudaEventRecord(gpu->profile_start,
+                                             gpu->compute_stream);
+        pthread_mutex_lock(&gpu->lock);
+        gpu->profile_metrics.begin_count++;
+        gpu->profile_compute_span_active = status == cudaSuccess;
+        pthread_mutex_unlock(&gpu->lock);
     }
     return 1;
 }
@@ -1232,6 +1469,7 @@ extern "C" int h3_gpu_continue(h3_gpu *gpu) {
     if (!gpu) return 0;
     pthread_mutex_lock(&gpu->lock);
     gpu->stats.submissions++;
+    if (gpu->profile_enabled) gpu->profile_metrics.continue_count++;
     pthread_mutex_unlock(&gpu->lock);
     return 1;
 }
@@ -1239,11 +1477,22 @@ extern "C" int h3_gpu_continue(h3_gpu *gpu) {
 extern "C" int h3_gpu_submit(h3_gpu *gpu) {
     if (!gpu) return 0;
     h3cspeed_operation_complete(gpu);
+    int device_span = 0;
+    pthread_mutex_lock(&gpu->lock);
+    int compute_span_active = gpu->profile_compute_span_active;
+    pthread_mutex_unlock(&gpu->lock);
+    if (gpu->profile_enabled && compute_span_active &&
+        cudaEventRecord(gpu->profile_mark, gpu->compute_stream) == cudaSuccess)
+        device_span = 1;
     struct timespec start, stop;
     clock_gettime(CLOCK_MONOTONIC, &start);
-    int ok = h3cspeed_cuda_ok(gpu, cudaStreamSynchronize(gpu->compute_stream),
+    int ok = h3cspeed_cuda_ok(gpu, profiled_stream_synchronize(
+                                   gpu, gpu->compute_stream,
+                                   H3CSPEED_PROFILE_STREAM_COMPUTE),
                                "cudaStreamSynchronize(compute)") &&
-             h3cspeed_cuda_ok(gpu, cudaStreamSynchronize(gpu->upload_stream),
+             h3cspeed_cuda_ok(gpu, profiled_stream_synchronize(
+                                   gpu, gpu->upload_stream,
+                                   H3CSPEED_PROFILE_STREAM_UPLOAD),
                                "cudaStreamSynchronize(upload)");
     if (ok && gpu->offload.release_scratch_on_submit) {
         pthread_mutex_lock(&gpu->scratch_lock);
@@ -1267,6 +1516,17 @@ extern "C" int h3_gpu_submit(h3_gpu *gpu) {
     pthread_mutex_lock(&gpu->lock);
     gpu->stats.submissions++;
     gpu->stats.command_wait_seconds += elapsed_seconds(&start, &stop);
+    if (gpu->profile_enabled) {
+        gpu->profile_metrics.submit_sync_count++;
+        if (device_span) {
+            float milliseconds = 0.0f;
+            if (cudaEventElapsedTime(&milliseconds, gpu->profile_start,
+                                     gpu->profile_mark) == cudaSuccess)
+                gpu->profile_metrics.compute_device_seconds +=
+                    (double)milliseconds / 1000.0;
+        }
+        gpu->profile_compute_span_active = 0;
+    }
     pthread_mutex_unlock(&gpu->lock);
     return ok;
 }
@@ -1285,27 +1545,37 @@ extern "C" int h3_gpu_get_stats(const h3_gpu *gpu, h3_gpu_stats *stats) {
 
 extern "C" void h3_gpu_profile_set_label(h3_gpu *gpu, const char *label) {
     if (!gpu) return;
+    pthread_mutex_lock(&gpu->lock);
     snprintf(gpu->profile_label, sizeof(gpu->profile_label), "%s", label ? label : "");
+    pthread_mutex_unlock(&gpu->lock);
 }
 
 extern "C" void h3_gpu_profile_mark(h3_gpu *gpu, const char *phase) {
     if (!gpu || !gpu->profile_enabled) return;
     (void)cudaEventRecord(gpu->profile_mark, gpu->compute_stream);
-    (void)cudaEventSynchronize(gpu->profile_mark);
+    (void)profiled_event_synchronize(gpu, gpu->profile_mark);
     float milliseconds = 0.0f;
     (void)cudaEventElapsedTime(&milliseconds, gpu->profile_start, gpu->profile_mark);
+    char label_snapshot[sizeof(gpu->profile_label)];
+    pthread_mutex_lock(&gpu->lock);
+    snprintf(label_snapshot, sizeof(label_snapshot), "%s", gpu->profile_label);
+    pthread_mutex_unlock(&gpu->lock);
+    const char *safe_label = h3cspeed_profile_safe_label(label_snapshot);
+    const bool has_safe_label = strcmp(safe_label, "redacted") != 0;
     fprintf(stderr, "h3cspeed CUDA%s%s%s: %s %.3f s\n",
-            gpu->profile_label[0] ? " [" : "",
-            gpu->profile_label[0] ? gpu->profile_label : "",
-            gpu->profile_label[0] ? "]" : "",
-            phase ? phase : "mark", milliseconds / 1000.0f);
+            has_safe_label ? " [" : "",
+            has_safe_label ? safe_label : "",
+            has_safe_label ? "]" : "",
+            h3cspeed_profile_safe_phase(phase), milliseconds / 1000.0f);
 }
 
 void *h3cspeed_scratch_reserve(h3_gpu *gpu, size_t bytes) {
     if (!gpu || !bytes) return nullptr;
     pthread_mutex_lock(&gpu->scratch_lock);
     if (bytes > gpu->scratch_bytes) {
-        if (!h3cspeed_cuda_ok(gpu, cudaStreamSynchronize(gpu->compute_stream),
+        if (!h3cspeed_cuda_ok(gpu, profiled_stream_synchronize(
+                                   gpu, gpu->compute_stream,
+                                   H3CSPEED_PROFILE_STREAM_COMPUTE),
                                "synchronize before scratch resize")) {
             pthread_mutex_unlock(&gpu->scratch_lock);
             return nullptr;
@@ -2871,7 +3141,8 @@ static int make_generated_weight_offloadable(h3_gpu *gpu,
      * authoritative copy in system RAM before allowing their VRAM allocation
      * to enter the same LRU cache as file-backed BF16/F32 weights. */
     if (!h3cspeed_cuda_ok(gpu,
-            cudaStreamSynchronize(gpu->compute_stream),
+            profiled_stream_synchronize(
+                gpu, gpu->compute_stream, H3CSPEED_PROFILE_STREAM_COMPUTE),
             "synchronize generated weight before RAM offload")) return 0;
 
     pthread_mutex_lock(&gpu->offload_lock);
@@ -3614,7 +3885,9 @@ static int quant_prepare_output(h3_gpu_tensor *destination, size_t elements,
     h3_gpu *gpu = destination->gpu;
     if (destination->data) {
         if (!h3cspeed_cuda_ok(gpu,
-                              cudaStreamSynchronize(gpu->compute_stream),
+                              profiled_stream_synchronize(
+                                  gpu, gpu->compute_stream,
+                                  H3CSPEED_PROFILE_STREAM_COMPUTE),
                               "synchronize quantized destination")) return 0;
     } else if (destination->bytes) {
         pthread_mutex_lock(&gpu->offload_lock);
@@ -3655,7 +3928,9 @@ static int quant_commit_output(h3_gpu_tensor *destination,
     if (!destination || !destination->gpu || !destination->data) return 0;
     h3_gpu *gpu = destination->gpu;
     if (!h3cspeed_cuda_ok(gpu,
-                          cudaStreamSynchronize(gpu->compute_stream),
+                          profiled_stream_synchronize(
+                              gpu, gpu->compute_stream,
+                              H3CSPEED_PROFILE_STREAM_COMPUTE),
                           "synchronize quantized conversion")) return 0;
     if (gpu->offload.enabled && destination->host_data) {
         if (!h3cspeed_cuda_ok(gpu,
@@ -3699,12 +3974,13 @@ static int quant_copy_temp(h3_gpu *gpu, h3_gpu_tensor *temporary,
                            char *error, size_t error_size) {
     if (!temporary || temporary->bytes < bytes || !host) return 0;
     if (!h3cspeed_cuda_ok(gpu,
-                          cudaMemcpyAsync(temporary->data, host, bytes,
-                                          cudaMemcpyHostToDevice,
-                                          gpu->upload_stream),
+                          profiled_h2d_async(gpu, temporary->data, host, bytes,
+                                             gpu->upload_stream),
                           "upload quantized source chunk") ||
         !h3cspeed_cuda_ok(gpu,
-                          cudaStreamSynchronize(gpu->upload_stream),
+                          profiled_stream_synchronize(
+                              gpu, gpu->upload_stream,
+                              H3CSPEED_PROFILE_STREAM_UPLOAD),
                           "synchronize quantized source chunk")) {
         if (error && error_size && !error[0]) snprintf(error, error_size,
                                                        "%s", h3_gpu_error(gpu));
@@ -3873,7 +4149,7 @@ static int quant_read_f16(h3_gpu_tensor *destination, const char *path,
         host = static_cast<uint16_t *>(malloc(bytes));
         temporary = quant_temp_bytes(gpu, bytes);
         if (!host || !temporary ||
-            !read_exact(descriptor, host, bytes, file_offset + offset * 2,
+            !read_exact(gpu, descriptor, host, bytes, file_offset + offset * 2,
                         error, error_size) ||
             !quant_copy_temp(gpu, temporary, host, bytes, error, error_size)) {
             ok = 0;
@@ -3967,10 +4243,10 @@ extern "C" int h3cspeed_gpu_tensor_read_i8_as_bf16(
     for (uint32_t row = 0; ok && row < rows; row += (uint32_t)rows_per_chunk) {
         uint32_t count = (uint32_t)std::min((size_t)(rows - row), rows_per_chunk);
         size_t bytes = (size_t)count * columns;
-        ok = read_exact(weight_fd, host_weight, bytes,
+        ok = read_exact(gpu, weight_fd, host_weight, bytes,
                         weight_offset + (uint64_t)row * columns,
                         error, error_size) &&
-             read_exact(scale_fd, host_scale, (size_t)count * sizeof(float),
+             read_exact(gpu, scale_fd, host_scale, (size_t)count * sizeof(float),
                         scale_offset + (uint64_t)row * sizeof(float),
                         error, error_size) &&
              quant_copy_temp(gpu, weight_temp, host_weight, bytes,
@@ -4044,12 +4320,12 @@ extern "C" int h3cspeed_gpu_tensor_read_nvfp4_as_bf16(
     if (!ok && error && error_size && !error[0])
         snprintf(error, error_size,
                  "cannot allocate NVFP4 conversion staging buffers");
-    if (ok) ok = read_exact(scale_fd, host_scale, scale_bytes, scale_offset,
+    if (ok) ok = read_exact(gpu, scale_fd, host_scale, scale_bytes, scale_offset,
                              error, error_size) &&
                 quant_copy_temp(gpu, scale_temp, host_scale, scale_bytes,
                                 error, error_size);
     if (ok && pre_fd >= 0)
-        ok = read_exact(pre_fd, host_pre, pre_bytes, pre_scale_offset,
+        ok = read_exact(gpu, pre_fd, host_pre, pre_bytes, pre_scale_offset,
                         error, error_size) &&
              quant_copy_temp(gpu, pre_temp, host_pre, pre_bytes,
                              error, error_size);
@@ -4057,7 +4333,7 @@ extern "C" int h3cspeed_gpu_tensor_read_nvfp4_as_bf16(
     for (uint32_t row = 0; ok && row < rows; row += (uint32_t)rows_per_chunk) {
         uint32_t count = (uint32_t)std::min((size_t)(rows - row), rows_per_chunk);
         size_t bytes = (size_t)count * packed_row_bytes;
-        ok = read_exact(packed_fd, host_packed, bytes,
+        ok = read_exact(gpu, packed_fd, host_packed, bytes,
                         packed_offset + (uint64_t)row * packed_row_bytes,
                         error, error_size) &&
              quant_copy_temp(gpu, packed_temp, host_packed, bytes,

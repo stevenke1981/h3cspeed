@@ -48,6 +48,36 @@ an immediate allocation failure.
 - `H3_CUDA_DEVICE=N`
 - `H3_CUDA_TF32=1` opt-in numerical/performance trade-off
 - `H3_PROFILE=1` print memory traffic and dispatch counters
+- `H3_PROFILE_JSON_DIR=PATH` enable profiling and atomically write one
+  machine-readable JSON report per CUDA context to an existing directory
+
+## Machine-readable profile reports
+
+Set both variables when collecting performance evidence:
+
+```bash
+mkdir -p /tmp/h3-profile
+H3_PROFILE=1 H3_PROFILE_JSON_DIR=/tmp/h3-profile ./build/h3cspeed ...
+python3 scripts/validate_profile_report.py /tmp/h3-profile/*.json
+```
+
+The version-1 report keeps the public `h3_gpu_stats` ABI unchanged. It separates
+file reads, pageable staging copies, H2D enqueue time, compute/upload stream
+host waits, event waits, allocations, and capacity-LRU versus phase-retire and
+error-cleanup frees. Device event durations and host waits may overlap and are
+explicitly marked non-additive. The current context report exposes an
+instrumented-host-to-context-wall diagnostic ratio, but deliberately emits
+`coverage_gate_valid=false` and `coverage_gate_met=false`: overlapping worker
+activity, VAE stitching, FFmpeg, and whole-process cold-start phases require the
+later benchmark driver before the plan's 95% critical-path gate can be evaluated.
+
+Only built-in phase labels are admitted to filenames and stderr; arbitrary
+caller labels are redacted. JSON label content is always redacted, so reports
+do not contain prompts or model paths even if a caller misuses the label API.
+The output directory must already exist and be a stable, private directory
+controlled by the invoking user. Directory path stability is the caller's
+responsibility; the writer redacts report content and atomically publishes each
+final filename without replacing an existing report.
 
 ## Sizing the RAM cache
 

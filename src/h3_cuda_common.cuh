@@ -3,6 +3,7 @@
 
 #include "h3_gpu.h"
 #include "h3_offload_policy.h"
+#include "h3_profile.h"
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -99,6 +100,11 @@ struct h3_gpu {
     char error[512];
     h3_gpu_stats stats;
     int profile_enabled;
+    uint64_t profile_context_id;
+    double profile_context_start_seconds;
+    int profile_compute_span_active;
+    char profile_json_dir[512];
+    h3cspeed_profile_metrics profile_metrics;
     char profile_label[128];
     struct timespec profile_wall;
     cudaEvent_t profile_start;

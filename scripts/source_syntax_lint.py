@@ -414,6 +414,7 @@ def main() -> int:
                     raise RuntimeError("cc or clang is required for host C syntax lint")
                 for source in (
                     root / "src/h3_offload_policy.c",
+                    root / "src/h3_profile.c",
                     root / "src/h3_cuda_info_main.c",
                 ):
                     run([
@@ -424,7 +425,7 @@ def main() -> int:
                         f"-I{stub}", f"-I{root / 'src'}", "-fsyntax-only",
                         str(source),
                     ], root)
-                print("offload policy/CUDA info syntax: passed")
+                print("offload policy/profile/CUDA info syntax: passed")
 
             if not args.skip_tokenizer:
                 compiler = shutil.which("cc") or shutil.which("clang")

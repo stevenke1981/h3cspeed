@@ -17,6 +17,7 @@
 *.h3c
 *.h3c.*
 h3cspeed-keyframe-*/
+h3-profile-*.json
 
 # Local model/checkpoint payloads. The quantized-model preparer may create
 # hardlinks, so an accidentally repo-local output root must remain untracked.

@@ -34,6 +34,9 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
     add_executable(test_resize tests/test_resize.c src/h3_resize_portable.c)
     add_executable(test_offload_policy tests/test_offload_policy.c
         src/h3_offload_policy.c)
+    add_executable(test_profile_report tests/test_profile_report.c
+        src/h3_profile.c)
+    target_include_directories(test_profile_report PRIVATE src)
     target_include_directories(test_offload_policy PRIVATE src)
     if(MSVC)
         target_compile_definitions(test_offload_policy PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -42,6 +45,16 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
     else()
         target_compile_options(test_offload_policy PRIVATE
             -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror)
+    endif()
+    if(MSVC)
+        target_compile_definitions(test_profile_report PRIVATE
+            _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+        target_compile_options(test_profile_report PRIVATE
+            /W4 /WX /permissive-)
+    else()
+        target_compile_options(test_profile_report PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow -Wconversion
+            -Wsign-conversion -Werror)
     endif()
     target_include_directories(test_resize PRIVATE src)
     if(MSVC)
@@ -53,6 +66,10 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
     endif()
     add_test(NAME portable_resize COMMAND test_resize)
     add_test(NAME offload_policy COMMAND test_offload_policy)
+    add_test(NAME profile_report_schema
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_profile_report.py
+                $<TARGET_FILE:test_profile_report>)
     add_test(NAME online_softmax_math
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_online_softmax.py)
     add_test(NAME quantized_sidecar_v2
@@ -167,6 +184,7 @@ add_library(h3cspeed_core STATIC
     src/h3_tokenizer_portable.c
     src/h3_resize_portable.c
     src/h3_offload_policy.c
+    src/h3_profile.c
     $<$<PLATFORM_ID:Windows>:src/h3_windows_posix.c>
     ${H3CSPEED_CUDA_SOURCES}
 )
