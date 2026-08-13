@@ -24,7 +24,7 @@ UPSTREAM_REPO = "antirez/h3.c"
 UPSTREAM_COMMIT = "8974cc055ea9c02fcd14cc27dfda3e1027c05153"
 ARCHIVE_URL = f"https://github.com/{UPSTREAM_REPO}/archive/{UPSTREAM_COMMIT}.zip"
 ARCHIVE_SHA256 = "dc6d3cd25cb70d5c723292e60f3f3b9093688a731467008a691d9a7412d3e8f3"
-PREPARED_TREE_SHA256 = "2609a96839f975c3505eaf46ac34576638c4fe0da9424ae9d55afc38948d9abe"
+PREPARED_TREE_SHA256 = "753f86fd035721fdc6db1ff4a42bfd7aaf6478ff27c7d0d0abf651e458d57931"
 
 # Git blob SHA-1 values, not ordinary file hashes. They pin the exact interfaces
 # on which the CUDA overlay was developed.
@@ -70,7 +70,7 @@ PREPARED_GIT_BLOBS: dict[str, str] = {
     "h3_text_encoder.c": "1089f0395f69b11f2327785de3c7aef291e85df7",
     "h3_dit_schedule.c": "bbffd91d5615deebcc093d1c97c3392a043e5e0b",
     "h3_dit.c": "980348657be5471fdeb50fee8e361618a4c96e26",
-    "h3_video_vae.c": "c5e9b83afebe08897a92118d532e36ce132fa607",
+    "h3_video_vae.c": "308c0d2df79dd9df07a19d5adcee494cf97d0064",
     "h3_video_encoder.c": "f60a96d58e04f277fb1479122f1e528727e8b1b1",
     "h3_audio_vae.c": "2eef6e2e3e85968f056c6d1da1691cdd036c23e5",
     "h3_ffmpeg.c": "b051cf185be1ae8e415a4024b526c1bf685cfbef",

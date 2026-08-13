@@ -668,6 +668,21 @@ static int project_layer_major_state(vae_context *vae,
     return 1;
 }
 
+static float *extract_latent_tile(const float *latent, int full_t,
+                                  int full_h, int full_w, int start_t,
+                                  int start_y, int start_x, int tile_t,
+                                  int tile_h, int tile_w, char *error,
+                                  size_t error_size);
+static int unpack_frame_range(vae_context *vae, int first_frame,
+                              int frame_count, h3_video_frames *output,
+                              char *error, size_t error_size);
+static int unpack_frames(vae_context *vae, h3_video_frames *output,
+                         char *error, size_t error_size);
+static int stitch_tiles(float **tiles, const tile_axis *y_axis,
+                        const tile_axis *x_axis, int frame_count,
+                        h3_video_frames *output,
+                        char *error, size_t error_size);
+
 static int decode_chunks_layer_major(vae_context *vae,
                         const tile_axis *y_axis, const tile_axis *x_axis,
                         const float *normalized_latent, int latent_time,
