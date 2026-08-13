@@ -5,6 +5,11 @@ SHA256SUMS text eol=lf
 *.py text eol=lf
 *.ps1 text eol=lf
 
+# Overlay sources are hash-verified against pinned git blob SHAs; keep LF so
+# bootstrap blob checks stay stable across Windows checkouts.
+scripts/upstream_overlay/*.c text eol=lf
+scripts/upstream_overlay/*.h text eol=lf
+
 # Build metadata and documentation use stable text normalization.
 CMakeLists.txt text eol=lf
 *.cmake text eol=lf
