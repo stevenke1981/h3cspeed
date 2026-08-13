@@ -24,7 +24,7 @@ FORBIDDEN_SUFFIXES = {
 }
 COMMON_FILES = (
     "LICENSE", "THIRD_PARTY_NOTICES.md", "PROVENANCE.md", "VERSION",
-    "README.md", "README.zh-TW.md",
+    "README.md", "README.zh-TW.md", "docs/PERF002_BENCHMARK.md",
 )
 COMMON_SCRIPTS = (
     "scripts/doctor.py",
@@ -37,6 +37,8 @@ COMMON_SCRIPTS = (
     "scripts/smoke-3070ti-8gb.sh",
     "scripts/fast-quality-3070ti-8gb.sh",
     "scripts/validate_profile_report.py",
+    "scripts/run_perf002_ab.py",
+    "scripts/validate_perf002_manifest.py",
 )
 COMMON_PROFILES = (
     "profiles/rtx3070ti-8gb.env",

@@ -471,7 +471,7 @@ traffic counters and media QA evidence.
 | ID | Change | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
 | PERF-001 | Wall/I/O/H2D/wait profiler + JSON report | none | >=95% wall accounting, <2% disabled overhead |
-| PERF-002 | Reproducible ComfyUI/h3cspeed A/B manifest/driver | PERF-001 | immutable inputs, media QA both sides |
+| PERF-002 | Reproducible ComfyUI/h3cspeed A/B manifest/driver | PERF-001 | 002A/B manifest + synthetic media harness implemented; real dual-engine A/B `NOT_RUN` |
 | PERF-003 | F32 hidden-pool state-size spike + tile/layer parity harness | PERF-001 | ownership/memory model + same-latent 22-frame proof |
 | PERF-004 | Layer-major F32 VAE execution via verified overlay | PERF-003 | <40 GiB upload target, >=3x VAE wall speedup |
 | PERF-005 | Double-buffered async refill primitives | PERF-001 | event-safe focused overlap trace |
@@ -497,10 +497,11 @@ traffic counters and media QA evidence.
 
 ## 11. Immediate next change
 
-Finish the remaining **PERF-001** acceptance evidence, then implement
-**PERF-002**. The private per-context producer/schema now attributes CUDA-side
-wall/I/O/H2D/wait activity without changing the public C API, but the matched
-22-frame driver, whole-process stage timers, immutable input manifest, 95%
-critical-path coverage and disabled-overhead gate remain pending. Those results
-must select whether VAE reordering, async refill or cache tuning provides the
-largest verified return.
+Continue **PERF-002** from its bounded 002A/B walking skeleton. Immutable input
+manifests now hash actual bound files without retaining private paths or prompt
+text, and the media harness verifies 124-frame video/audio decode plus five
+sample hashes. The next change is a real 22-frame two-engine smoke adapter with
+whole-process stage timers and verified scheduler/Sage traces. The matched
+864x480 124-frame 8-step cold plus three-warm A/B, PERF-001 95% critical-path
+coverage and 22-frame disabled-overhead gate remain `NOT_RUN`; they must not be
+inferred from the schema or synthetic media PASS.

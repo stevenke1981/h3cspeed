@@ -26,6 +26,9 @@ class RuntimePackageTest(unittest.TestCase):
         package = load_module()
         self.assertIn("scripts/run_h3_quantized_60s.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/validate_profile_report.py", package.COMMON_SCRIPTS)
+        self.assertIn("scripts/run_perf002_ab.py", package.COMMON_SCRIPTS)
+        self.assertIn("scripts/validate_perf002_manifest.py", package.COMMON_SCRIPTS)
+        self.assertIn("docs/PERF002_BENCHMARK.md", package.COMMON_FILES)
 
     def test_forbidden_model_and_conditioning_payloads_fail_closed(self) -> None:
         package = load_module()

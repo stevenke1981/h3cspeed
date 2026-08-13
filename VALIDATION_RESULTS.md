@@ -215,3 +215,16 @@ RAM/file transfer staging: 64 MiB
 The source and native binaries are usable for CLI/model-directory workflows.
 The remaining parity, racecheck and newer-architecture gates must pass before
 calling this an architecture-wide production release.
+
+# PERF-002A/B matched benchmark walking skeleton (2026-08-14)
+
+- Immutable input manifest: PASS in portable contract tests. The creator
+  hashes the actual bound regular files, reference PNG and private prompt;
+  canonical output contains labels and SHA-256 values only and refuses
+  overwrite, symlink/reparse inputs and unmatched algorithm-parity schedules.
+- Synthetic 864x480/124-frame media harness: PASS with real ffprobe, full
+  ffmpeg video/audio decode, 32 kHz stereo non-silent PCM and five PNG hashes.
+- ComfyUI/h3cspeed 22-frame runtime adapters: NOT RUN.
+- Matched 864x480/124-frame/8-step cold plus three-warm A/B: NOT RUN.
+- Scheduler sigma/raw-audio evidence and actual Sage hit/fallback traces:
+  NOT RUN. No performance, quality-parity or speedup claim is made.
