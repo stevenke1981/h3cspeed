@@ -285,8 +285,15 @@ python scripts/run_h3_quantized_60s.py `
 第一次可加 `--stop-after 1`，先完成 124 幀品質 gate；通過後用完全相同命令
 移除該參數即可續跑。腳本需要外部 `ffmpeg`／`ffprobe`，以及 preparer
 產生、位於模型根目錄旁的 `manifest.json`。模型權重、sidecar 與生成影片
-不會封裝進 portable 包。十二段的連續性與最終精確 60 秒成品仍須以實際長片
-驗收，不能由前述短 smoke 推論為 PASS。
+不會封裝進 portable 包。實測 RTX 3070 Ti 已完成十二段與 final exact-media
+gate：864×480 H.264/yuv420p、24fps、解碼 1,440 幀、60.000000 秒、AAC
+32kHz stereo，且每聲道精確解碼 1,920,000 samples。28,398,378-byte 成品
+SHA-256 為
+`06ADEA7A78FF6E866F137DF0C8176C9181D09399457E20E429DD1B48AD3DDD06`；
+full decode exit 0、音訊非靜音。畫面可辨識狐狸與雪景並跨段延續，但 288×160
+內部 render 帶來明顯柔化、ghosting、色塊及部分生成式接縫跳變。因此這是
+容量／流程 PASS，不代表 production-quality 或無縫連續性；完整 telemetry 見
+`VALIDATION_RESULTS.md`。
 
 準備完成後，可先執行短版原生 diagnostic（experimental Qwen 路徑，不使用
 sidecar）：

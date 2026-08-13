@@ -296,8 +296,17 @@ Use `--stop-after 1` for the first 124-frame quality gate, then rerun the same
 command without it to resume. The script requires external `ffmpeg` and
 `ffprobe` plus the preparer's adjacent `manifest.json`; model weights, sidecars
 and generated media are never bundled.
-Twelve-segment continuity and the final exact-60-second artifact remain an
-acceptance result, not an implication of the shorter smoke tests above.
+A complete acceptance run on the measured RTX 3070 Ti host passed all twelve
+segments and the final exact-media gate: 864x480 H.264/yuv420p, 1,440 decoded
+frames at 24 fps, 60.000000 seconds, AAC 32 kHz stereo and exactly 1,920,000
+decoded samples per channel. The 28,398,378-byte artifact has SHA-256
+`06ADEA7A78FF6E866F137DF0C8176C9181D09399457E20E429DD1B48AD3DDD06`.
+Full decode exited 0 and audio was non-silent. Visual inspection found a
+recognizable fox and snowy setting across the run, but also visible softness,
+ghosting, color blocking and some generative cuts at segment boundaries from
+the 288x160 internal render. This is a capacity/workflow PASS, not a
+production-quality or seamless-continuity claim; detailed telemetry is in
+`VALIDATION_RESULTS.md`.
 
 After preparing the root, a short direct-native diagnostic run (experimental
 Qwen path, without the sidecar) is:

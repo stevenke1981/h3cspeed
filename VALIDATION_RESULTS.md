@@ -109,6 +109,32 @@
   fox subject without patch noise. Audio measured -54.69 dB RMS and -37.59 dB
   peak. This remains a two-step continuity/geometry smoke, not a 20-step I2V
   quality result or a completed sixty-second run.
+- A complete resumable quantized FL2VA I2V + SageAttention acceptance used the
+  packaged Windows `a372afb` runtime on the same RTX 3070 Ti / driver 596.36 /
+  CUDA 13.2 host. It generated twelve independently verified 864x480 clips,
+  each 124 frames, 20 steps, all 50 DiT layers, reuse 1, core-reuse 4 and a
+  288x160 internal render. Segment 01 was T2V; segments 02-12 used the previous
+  decoded final frame through the v2 prompt-bound FL2VA sidecar. The first
+  invocation stopped after verified segment 02 and the second resumed from the
+  content-bound state without regenerating those clips. Combined wall time for
+  both invocations was about 3 h 20 min 53 s, including the initial and resume
+  model/runtime/Comfy environment hashes, conditioning, offload wait, VAE,
+  per-segment media checks, final encode and final deep verification. Observed
+  per-segment DiT denoise was 45.369-49.085 s; representative DiT telemetry
+  recorded up to 2,644.69 MiB peak device, 1,522.56 MiB peak resident and
+  13,465.08 MiB peak host memory, with 109.25 GiB uploads and up to 34.05 GiB
+  file fallback. Qwen image-aware conditioning used about 6.32 GiB process
+  VRAM at the observed high point.
+- The final 28,398,378-byte artifact has SHA-256
+  `06ADEA7A78FF6E866F137DF0C8176C9181D09399457E20E429DD1B48AD3DDD06`.
+  Independent root verification found H.264/yuv420p 864x480, 24/1 CFR, exactly
+  1,440 decoded frames and 60.000000 s; AAC 32 kHz stereo decoded to exactly
+  1,920,000 float samples per channel. FFmpeg `-xerror` full decode exited 0.
+  Audio measured -45.54 dB RMS and -21.91 dB peak. First/middle/final and all
+  eleven boundary pairs showed a recognizable fox and snowy environment, but
+  also visible softness, ghosting, color blocking and generative boundary cuts.
+  This is a capacity/resume/exact-media PASS, while visual quality at the
+  288x160 internal render remains experimental rather than production-ready.
 - The focused SageAttention benchmark used Windows 10 build 19045, RTX 3070 Ti
   8 GiB (`sm_86`), driver 596.36, CUDA 13.2 / nvcc 13.2.78, VS Build Tools
   18.6.0 (MSVC 14.51), Release architecture 86, B=1/H=56/N=800/D=128, two

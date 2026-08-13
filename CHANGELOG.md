@@ -63,6 +63,11 @@
   exited 0, passed full decode and showed a recognizable fox; the 20-step
   artifact and measured offload telemetry are recorded in
   `VALIDATION_RESULTS.md`.
+- Completed a real twelve-segment, resumable 20-step FL2VA I2V acceptance on an
+  RTX 3070 Ti 8 GiB. The final 864x480 artifact passed the exact 1,440-frame,
+  60.000000-second, 32 kHz stereo sample-count and full-decode gates. The
+  capacity/workflow is validated; the 288x160 internal render remains visibly
+  soft and artifact-prone and is not labeled production-quality.
 - Added opt-in `H3_CUDA_ATTENTION=sage`: per-token INT8 Q/K, DP4A QK, FP32
   online softmax and BF16 V/output for eligible attention shapes. Unsupported
   CUDA shapes/dtypes remain on the native GPU attention path; there is no CPU
