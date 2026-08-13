@@ -332,6 +332,14 @@ if(H3CSPEED_ENABLE_TESTS)
     target_link_libraries(test_cuda_nvfp4_numeric PRIVATE h3cspeed_core)
     set_target_properties(test_cuda_nvfp4_numeric PROPERTIES
         LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    add_executable(test_cuda_vae_layer_major_parity
+        tests/test_cuda_vae_layer_major_parity.c)
+    target_include_directories(test_cuda_vae_layer_major_parity PRIVATE
+        "${H3CSPEED_H3_SOURCE_DIR}")
+    target_link_libraries(test_cuda_vae_layer_major_parity PRIVATE
+        h3cspeed_core)
+    set_target_properties(test_cuda_vae_layer_major_parity PROPERTIES
+        LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
     add_executable(test_text_prompt_hash tests/test_text_prompt_hash.c)
     target_include_directories(test_text_prompt_hash PRIVATE
         "${H3CSPEED_H3_SOURCE_DIR}")
@@ -402,6 +410,8 @@ if(H3CSPEED_ENABLE_TESTS)
             -Wall -Wextra -Wpedantic -Werror)
         target_compile_options(test_cuda_nvfp4_numeric PRIVATE
             -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(test_cuda_vae_layer_major_parity PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
         target_compile_options(test_text_embedding_file PRIVATE
             -Wall -Wextra -Wpedantic -Werror)
     endif()
@@ -420,6 +430,10 @@ if(H3CSPEED_ENABLE_TESTS)
     set_tests_properties(cuda_convrot_numeric PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME cuda_nvfp4_numeric COMMAND test_cuda_nvfp4_numeric)
     set_tests_properties(cuda_nvfp4_numeric PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME cuda_vae_layer_major_parity
+        COMMAND test_cuda_vae_layer_major_parity)
+    set_tests_properties(cuda_vae_layer_major_parity PROPERTIES
+        SKIP_RETURN_CODE 77)
     add_test(NAME online_softmax_math
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_online_softmax.py)
     add_test(NAME alias_free_snake_math

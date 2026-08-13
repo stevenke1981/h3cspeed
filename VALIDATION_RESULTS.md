@@ -145,6 +145,32 @@
   peak was 55.03 MiB, host cache was 0 MiB, and the five benchmark BF16 host
   arrays total 54.69 MiB. Compute Sanitizer on the final CUDA numeric test
   reported memcheck 0 errors and racecheck 0 hazards.
+- The focused same-latent video-VAE parity gate (plan P1A / PERF-004) used the
+  same RTX 3070 Ti / driver 596.36 / CUDA 13.2.78 / MSVC 14.51 host, a Release
+  `sm_86` `build-perf` tree at `2b155b7` plus the new harness, and the FL2VA
+  F16 video-VAE source under
+  `E:\minimax-h3\ComfyUI\models\h3_t2v_quantized\base\FL2VA\video_vae\source`.
+  `build-perf\test_cuda_vae_layer_major_parity.exe` decodes one deterministic
+  xorshift64 latent twice in-process, tile-major first and then with
+  `H3_VAE_LAYER_MAJOR=1`, with the test applying the standard offload profile
+  (`H3_CUDA_LOW_VRAM=1`, `ram+file`, 5,888 MiB VRAM budget, 1,536 MiB weight
+  cache, 128 MiB pinned, 64 MiB staging) and `H3_PROFILE=1` for path markers.
+  At latent 7x16x32 (22 frames, 256x512, tiles 2x1 at 288 pixels, 2 states)
+  the decode was bit-for-bit identical: 0/8,650,752 pixel mismatches, max-abs
+  0, rel-L2 0; weight uploads fell from 18.06 GiB tile-major to 9.03 GiB
+  layer-major (-50.0%, the two-state minimum) and device peak rose from
+  1,908.34 MiB to 1,939.91 MiB (+2 x 15.79 MiB hidden pool). At latent
+  7x30x54 (22 frames, 480x864, tiles 4x2 at 272 pixels, 8 states) the decode
+  was again bit-for-bit identical: 0/27,371,520 pixel mismatches, max-abs 0,
+  rel-L2 0; weight uploads fell from 72.23 GiB to 9.03 GiB (-87.5%), passing
+  the P1A 22-frame smoke gate of at least 80% fewer upload bytes. Device peak
+  rose from 1,909.68 MiB to 2,036.43 MiB (+8 x 15.84 MiB hidden pool), and
+  both traversals dispatched identical work (1,176 linear, 288 SDPA). Total
+  harness wall time was 55.4 s and 167.5 s respectively, each covering both
+  decodes plus two cold weight loads, so per-path wall attribution and the
+  124-frame <40 GiB / >=3x wall gates remain pending PERF-001
+  instrumentation; the tile-major device peak matches the accepted 864x480
+  production baseline exactly.
 
 Observed low-VRAM policy on the acceptance machine:
 
