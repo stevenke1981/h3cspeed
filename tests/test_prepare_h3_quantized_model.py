@@ -117,6 +117,13 @@ class PrepareH3QuantizedModelTests(unittest.TestCase):
                     "{}\n",
                 )
                 manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest["schema_version"], 2)
+                self.assertEqual(manifest["kind"], prep.PACK_KIND)
+                self.assertEqual(manifest["model_family"], "FL2VA")
+                self.assertEqual(manifest["capabilities"], list(prep.PACK_CAPABILITIES))
+                self.assertIn("fl2va_i2v_first_frame", manifest["capabilities"])
+                self.assertIn("fl2va_i2v_last_frame", manifest["capabilities"])
+                self.assertEqual(manifest["unsupported_model_families"], ["Ref2VA"])
                 self.assertFalse(manifest["large_payloads_copied"])
                 self.assertEqual(Path(manifest["model_root"]), output / "base")
                 self.assertEqual(manifest["model_root_relative"], "base")

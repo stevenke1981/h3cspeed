@@ -174,14 +174,14 @@ python scripts/prepare_h3_quantized_model.py
 
 The defaults target `E:\minimax-h3\ComfyUI\models`, use the small
 configuration/tokenizer files under `E:\models\MiniMax-H3`, and create
-`E:\minimax-h3\ComfyUI\models\h3_t2v_quantized`. Override the locations when
+`E:\minimax-h3\ComfyUI\models\h3_fl2va_quantized`. Override the locations when
 needed:
 
 ```powershell
 python scripts/prepare_h3_quantized_model.py `
   --models-root E:\minimax-h3\ComfyUI\models `
   --base-root E:\models\MiniMax-H3 `
-  --output-root E:\minimax-h3\ComfyUI\models\h3_t2v_quantized
+  --output-root E:\minimax-h3\ComfyUI\models\h3_fl2va_quantized
 ```
 
 The four large safetensors files are hardlinks, never copies. Only an
@@ -189,7 +189,7 @@ allow-listed set of small config/tokenizer files is copied below `base/`, and
 `manifest.json` records source paths, sizes, header hashes, dtypes and schema
 coverage. The command fails closed if validation fails or the output root
 already exists; remove or choose a new output root only after reviewing the
-manifest. The native model root is `h3_t2v_quantized/base` and retains the
+manifest. The native model root is `h3_fl2va_quantized/base` and retains the
 `FL2VA/transformer`, `FL2VA/text_encoder`, `FL2VA/video_vae/source` and
 `FL2VA/audio_vae` component directories.
 
@@ -199,8 +199,11 @@ required online Hadamard rotation to activations, decodes the Qwen NVFP4/AWQ
 weights with their blocked scales and activation-side `pre_quant_scale`, and
 converts the F16 video VAE at load time. On Ampere (`sm_86`), Qwen NVFP4 is a
 correctness/capacity path that materializes BF16 weights; it is not native
-NVFP4 Tensor Core execution. This four-file root is T2V/FL2VA only and does not
-include the separate Ref2VA transformer.
+NVFP4 Tensor Core execution. This is a quantized **FL2VA model pack**, not a
+T2V-only pack. Its manifest declares T2V plus first-frame, last-frame and
+first+last-frame I2V capabilities. It does not include the separate Ref2VA
+transformer. Existing `h3_t2v_quantized` prepared roots remain compatible; the
+new name makes the already-supported I2V contract explicit.
 
 ### ComfyUI CUDA conditioning bridge (recommended quantized path)
 
@@ -313,7 +316,7 @@ Qwen path, without the sidecar) is:
 
 ```powershell
 .\build\h3cspeed.exe `
-  -d E:\minimax-h3\ComfyUI\models\h3_t2v_quantized\base `
+  -d E:\minimax-h3\ComfyUI\models\h3_fl2va_quantized\base `
   -p "A red fox walks through fresh snow in a pine forest." `
   --width 256 --height 256 --frames 22 --steps 4 --layers 50 `
   --reuse 1 --core-reuse 1 --ssd-streaming `

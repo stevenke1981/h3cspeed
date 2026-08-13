@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Validate and stage the local MiniMax H3 ComfyUI quantized model pack.
+"""Validate and stage the local MiniMax H3 ComfyUI quantized FL2VA model pack.
 
 The four safetensors files are intentionally inspected without reading their
 large payloads.  Only the safetensors header and the tiny ``comfy_quant``
 marker tensors are read.  A successful preparation creates hardlinks for the
 four large files, copies small FL2VA configuration/tokenizer files, and emits
-one manifest.  Existing output directories are never overwritten.
+one manifest declaring T2V and keyframe-I2V capabilities. Existing output
+directories are never overwritten.
 """
 
 from __future__ import annotations
@@ -30,7 +31,16 @@ DEFAULT_COMFY_MODELS = Path(
 DEFAULT_BASE_MODEL = Path(
     os.environ.get("H3_BASE_MODEL", r"E:\models\MiniMax-H3")
 )
-DEFAULT_OUTPUT = DEFAULT_COMFY_MODELS / "h3_t2v_quantized"
+DEFAULT_OUTPUT = DEFAULT_COMFY_MODELS / "h3_fl2va_quantized"
+
+PACK_KIND = "minimax-h3-comfy-fl2va-quantized-pack"
+PACK_MODEL_FAMILY = "FL2VA"
+PACK_CAPABILITIES = (
+    "t2v",
+    "fl2va_i2v_first_frame",
+    "fl2va_i2v_last_frame",
+    "fl2va_i2v_first_and_last_frames",
+)
 
 HEADER_LIMIT = 256 * 1024 * 1024
 SMALL_FILE_LIMIT = 16 * 1024 * 1024
@@ -661,8 +671,12 @@ def prepare_pack(
             )
 
         manifest = {
-            "schema_version": 1,
-            "kind": "minimax-h3-comfy-t2v-quantized-pack",
+            "schema_version": 2,
+            "kind": PACK_KIND,
+            "model_family": PACK_MODEL_FAMILY,
+            "capabilities": list(PACK_CAPABILITIES),
+            "unsupported_model_families": ["Ref2VA"],
+            "conditioning_sidecar_versions": [1, 2],
             "prepared_at_utc": datetime.now(timezone.utc).isoformat(),
             "source_models_root": str(report.models_root),
             "source_base_model": str(report.base_root),

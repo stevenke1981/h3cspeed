@@ -176,19 +176,19 @@ python scripts/prepare_h3_quantized_model.py
 
 預設來源是 `E:\minimax-h3\ComfyUI\models`，小型 config／tokenizer 取自
 `E:\models\MiniMax-H3`，輸出到
-`E:\minimax-h3\ComfyUI\models\h3_t2v_quantized`。需要時可覆寫路徑：
+`E:\minimax-h3\ComfyUI\models\h3_fl2va_quantized`。需要時可覆寫路徑：
 
 ```powershell
 python scripts/prepare_h3_quantized_model.py `
   --models-root E:\minimax-h3\ComfyUI\models `
   --base-root E:\models\MiniMax-H3 `
-  --output-root E:\minimax-h3\ComfyUI\models\h3_t2v_quantized
+  --output-root E:\minimax-h3\ComfyUI\models\h3_fl2va_quantized
 ```
 
 四個大型 safetensors 只建立 hardlink，不會複製 payload。只有 allow-list
 內的小型 config／tokenizer 會複製到 `base/`，並在 `manifest.json` 記錄來源、
 大小、header hash、dtype 與 schema coverage。驗證失敗或輸出根目錄已存在時
-會 fail-closed；原生模型根目錄是 `h3_t2v_quantized/base`，保留
+會 fail-closed；原生模型根目錄是 `h3_fl2va_quantized/base`，保留
 `FL2VA/transformer`、`FL2VA/text_encoder`、`FL2VA/video_vae/source` 與
 `FL2VA/audio_vae`。請檢查 manifest 後再刪除或改用新的輸出目錄。
 
@@ -197,8 +197,11 @@ python scripts/prepare_h3_quantized_model.py `
 online Hadamard rotation；Qwen 則依 blocked scale 與 activation-side
 `pre_quant_scale` 解碼 NVFP4/AWQ 權重，F16 video VAE 會在載入時轉換。
 Ampere（`sm_86`）上的 Qwen NVFP4 是 correctness／capacity 路徑，會
-materialize BF16 權重，並非原生 NVFP4 Tensor Core 執行。這個四檔模型根
-只包含 T2V／FL2VA，不含另一個 Ref2VA transformer。
+materialize BF16 權重，並非原生 NVFP4 Tensor Core 執行。這是量化
+**FL2VA 模型包**，不是只能跑 T2V 的模型包；manifest 會明確宣告 T2V、
+首幀 I2V、尾幀 I2V，以及首尾幀 I2V。它不含另一個 Ref2VA transformer。
+既有 `h3_t2v_quantized` 準備目錄仍可相容使用，新名稱只是把已支援的 I2V
+契約清楚表達出來。
 
 ### ComfyUI CUDA conditioning bridge（量化模型建議路徑）
 
@@ -300,7 +303,7 @@ sidecar）：
 
 ```powershell
 .\build\h3cspeed.exe `
-  -d E:\minimax-h3\ComfyUI\models\h3_t2v_quantized\base `
+  -d E:\minimax-h3\ComfyUI\models\h3_fl2va_quantized\base `
   -p "A red fox walks through fresh snow in a pine forest." `
   --width 256 --height 256 --frames 22 --steps 4 --layers 50 `
   --reuse 1 --core-reuse 1 --ssd-streaming `

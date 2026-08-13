@@ -500,6 +500,21 @@ def model_payload_fingerprints(
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RunError(f"quantized model manifest is unreadable: {manifest}") from exc
+    if data.get("schema_version") != 2:
+        raise RunError("quantized FL2VA model manifest must use schema version 2")
+    if data.get("kind") != "minimax-h3-comfy-fl2va-quantized-pack":
+        raise RunError("quantized model manifest is not an FL2VA pack")
+    if data.get("model_family") != "FL2VA":
+        raise RunError("quantized model manifest has the wrong model family")
+    required_capabilities = {
+        "t2v", "fl2va_i2v_first_frame", "fl2va_i2v_last_frame",
+        "fl2va_i2v_first_and_last_frames",
+    }
+    capabilities = data.get("capabilities")
+    if not isinstance(capabilities, list) or not required_capabilities.issubset(capabilities):
+        raise RunError("quantized FL2VA model manifest lacks I2V capabilities")
+    if 2 not in data.get("conditioning_sidecar_versions", []):
+        raise RunError("quantized FL2VA model manifest lacks sidecar v2 support")
     root = manifest.parent.resolve()
     relative_model_root = data.get("model_root_relative")
     if not isinstance(relative_model_root, str) or not relative_model_root:
@@ -555,6 +570,8 @@ def model_payload_inventory(
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RunError(f"quantized model manifest is unreadable: {manifest}") from exc
+    if data.get("kind") != "minimax-h3-comfy-fl2va-quantized-pack":
+        raise RunError("quantized model manifest is not an FL2VA pack")
     root = manifest.parent.resolve()
     relative_model_root = data.get("model_root_relative")
     if not isinstance(relative_model_root, str) or (

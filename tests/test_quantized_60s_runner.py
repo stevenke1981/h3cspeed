@@ -116,6 +116,14 @@ class Quantized60SecondRunnerTests(unittest.TestCase):
             config.write_text("{}", encoding="utf-8")
             manifest = pack / "manifest.json"
             manifest.write_text(json.dumps({
+                "schema_version": 2,
+                "kind": "minimax-h3-comfy-fl2va-quantized-pack",
+                "model_family": "FL2VA",
+                "capabilities": [
+                    "t2v", "fl2va_i2v_first_frame", "fl2va_i2v_last_frame",
+                    "fl2va_i2v_first_and_last_frames",
+                ],
+                "conditioning_sidecar_versions": [1, 2],
                 "model_root_relative": "base",
                 "large_payloads": [{
                     "path": "base/FL2VA/text_encoder/qwen.safetensors",
@@ -138,6 +146,13 @@ class Quantized60SecondRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.RunError, "does not match"):
                 runner.model_payload_fingerprints(
                     manifest, pack / "sibling", encoder, encoder_hash
+                )
+            manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+            manifest_data["capabilities"].remove("fl2va_i2v_last_frame")
+            manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
+            with self.assertRaisesRegex(runner.RunError, "lacks I2V capabilities"):
+                runner.model_payload_fingerprints(
+                    manifest, model_root, encoder, encoder_hash
                 )
 
     def test_runtime_identity_includes_portable_private_payloads(self) -> None:

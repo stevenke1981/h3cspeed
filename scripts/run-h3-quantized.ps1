@@ -193,6 +193,19 @@ try {
     }
 
     $modelRoot = Resolve-ExistingDirectory $ModelRoot "Model root"
+    $manifest = $null
+    $manifestPath = Join-Path (Split-Path -Parent $modelRoot) "manifest.json"
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($null -ne $manifest.model_family -and $manifest.model_family -ne "FL2VA") {
+            throw "Quantized model manifest is not an FL2VA pack: $manifestPath"
+        }
+        if ($null -ne $manifest.unsupported_model_families -and
+            @($manifest.unsupported_model_families) -contains "Ref2VA" -and
+            (Test-Path -LiteralPath (Join-Path $modelRoot "Ref2VA") -PathType Container)) {
+            throw "Prepared FL2VA pack unexpectedly contains Ref2VA payloads"
+        }
+    }
     $comfyRoot = Resolve-ExistingDirectory $ComfyUIRoot "ComfyUI root"
     $encoder = Resolve-ExistingFile $TextEncoder "Quantized Qwen text encoder"
     $firstFrameSource = if ([string]::IsNullOrWhiteSpace($FirstFrame)) { $null } else { Resolve-ExistingFile $FirstFrame "First-frame image" }
@@ -203,6 +216,18 @@ try {
         $mode = "t2v"
     } else {
         $mode = "fl2va-i2v"
+        if ($null -ne $manifest -and $null -ne $manifest.capabilities) {
+            $requiredCapability = if (($null -ne $canonicalFirstFrame) -and ($null -ne $canonicalLastFrame)) {
+                "fl2va_i2v_first_and_last_frames"
+            } elseif ($null -ne $canonicalFirstFrame) {
+                "fl2va_i2v_first_frame"
+            } else {
+                "fl2va_i2v_last_frame"
+            }
+            if (@($manifest.capabilities) -notcontains $requiredCapability) {
+                throw "Quantized FL2VA manifest does not declare $requiredCapability"
+            }
+        }
         if ($Width -lt 64 -or $Height -lt 64) {
             throw "I2V width and height must both be at least 64"
         }
