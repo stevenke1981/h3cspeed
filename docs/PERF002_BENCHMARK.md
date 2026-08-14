@@ -1,10 +1,10 @@
 # PERF-002 matched benchmark contract
 
 PERF-002 compares ComfyUI and h3cspeed only after both engines consume the
-same immutable FL2VA first-frame I2V inputs. The committed code is the first
-portable walking skeleton: it creates and validates input manifests and runs
-real ffprobe/ffmpeg media QA. It does **not** yet launch either engine and does
-not establish a speed result.
+same immutable FL2VA first-frame I2V inputs. The committed code creates and
+validates input manifests, runs real ffprobe/ffmpeg media QA, and now supports
+isolated bound-host smoke execution for each engine. Those smokes do **not**
+establish a matched speed or quality result.
 
 ## Fixed primary contract
 
@@ -67,15 +67,17 @@ prompt, absolute path, environment, command line, stdout, hostname or PID.
 
 For a completed engine output, run `validate-media`. It requires H.264
 864x480, exactly 124 frames at 24 fps, AAC 32 kHz stereo, full video/audio
-decode, non-silent PCM and five sampled frame hashes. It publishes an
-individual engine result as `NOT_RUN` until scheduler and attention runtime
-evidence and actual timings are supplied. Automated QA always leaves visual
-review as `MANUAL_REQUIRED`.
+decode, non-silent PCM and five sampled frame hashes. An individual engine
+result is published only after scheduler and attention runtime evidence and
+actual timings are supplied. Automated QA always leaves visual review as
+`MANUAL_REQUIRED`.
 
-Synthetic media and 22-frame smokes prove only the harness. A performance
-claim requires both engines to complete the fixed 124-frame contract, one cold
-plus three warm trials, immutable pre/post hashes, backend traces, full media
-QA and human five-frame review. Until then matched A/B remains `NOT_RUN`.
+Synthetic media validates only the harness. The 2026-08-14 bound-host 22-frame
+smokes additionally validate each isolated runtime and its trace contract, but
+they are not a matched benchmark. A performance claim requires both engines to
+complete the fixed 124-frame contract, one cold plus three warm trials,
+immutable pre/post hashes, backend traces, full media QA and human five-frame
+review. Until then matched A/B remains `NOT_RUN`.
 
 ## PERF-002C isolated engine smoke
 
@@ -97,7 +99,10 @@ rejects output paths inside the three protected roots, runs without a shell,
 and requires the 864x480/22-frame/24 fps/2-step smoke media contract. It accepts
 the smoke only when scheduler evidence is `dual_clock_euler/native_flow` with
 12/3 shifts and the `dit_bf16` attention trace records real Sage hits with zero
-unexpected fallback.
+unexpected fallback. The scheduler trace schema is engine-specific: h3cspeed
+keeps its exact legacy fields without `fps`, while ComfyUI must include exactly
+one `fps` field with integer value `24`; missing, incorrect, or extra fields
+are rejected.
 
 The h3cspeed binary now contains an opt-in producer for these two runtime
 traces. Set both `H3CSPEED_PERF002_SCHEDULER_TRACE` and
@@ -105,8 +110,9 @@ traces. Set both `H3CSPEED_PERF002_SCHEDULER_TRACE` and
 trees. The producer serializes the actual serving sigma arrays and scoped CUDA
 dispatch counters after denoising, and publishes scheduler evidence only after
 all requested audio Euler updates execute; partial, concurrent and existing-target
-publishes fail closed. This instrumentation has portable contract coverage,
-but a real 22-frame engine run is still `NOT_RUN`.
+publishes fail closed. This instrumentation has portable contract coverage. A
+real bound-host 22-frame h3cspeed smoke is now `SMOKE_PASS`; the full matched
+A/B remains `NOT_RUN`.
 
 ### h3cspeed direct-binary command contract
 
@@ -176,6 +182,29 @@ always keeps `matched_ab_status: NOT_RUN`; it cannot establish throughput or
 quality parity. Run ComfyUI with a separate config and directory. Neither
 engine reads or overwrites the other's output.
 
+## 2026-08-14 bound-host smoke evidence
+
+The real PERF-002C sidecar-backed smoke used immutable manifest SHA-256
+`49bb685df675dcf265fe87c5b95fc6587c7a42e6737dad427325be8de3cdf264`.
+
+- h3cspeed: `SMOKE_PASS`, wall `688.2388647 s`, media SHA-256
+  `54077780f5d45cfcd9d5b44b0fea91cea9c4fc15dceecf31cd60d376c9795f5b`,
+  `816597` bytes, `0.925 s`, Sage `102`, unexpected fallback `0`. The private
+  trace recorded `116.592 s` DiT denoise and `72.23 GiB` Video VAE decoder
+  upload traffic.
+- ComfyUI: `SMOKE_PASS`, wall `397.98855 s`, media SHA-256
+  `bb8dc8697c68a3f3a55d47038f138541bea467ffd54b7e828dacece5c9bbc6b8`,
+  `386003` bytes, `0.917 s`, Sage `100`, unexpected fallback `0`; the private
+  log recorded `307.74 s` prompt execution.
+
+Both outputs passed the isolated media contract (`864x480`, 22 frames,
+24 fps, H.264/AAC), full video/audio decode and non-silent PCM checks. Five
+sampled frames from each output were manually reviewed as clear and full-width.
+These isolated wall times are not a fair speed ranking because startup,
+conditioning, cache state and graph overhead are not matched. The required
+124-frame/8-step matched A/B (one cold plus three warm trials) remains
+`NOT_RUN`, as do native-control and PERF-001 wall-accounting gates.
+
 ## Repo-owned ComfyUI smoke driver
 
 `scripts/perf002_comfy_trace.py` is the ComfyUI-side `argv[1]` driver for the
@@ -199,9 +228,10 @@ non-zero; it does not create a synthetic replacement file.
 This producer deliberately binds a bounded entry-point file set: `main.py`,
 the T8 `sampling.py`/`nodes.py`, ComfyUI `attention.py`, and the four model
 files. This is not the runtime import closure: T8 helpers, other ComfyUI model
-modules, and the Python environment remain outside the current lock.
-Full-tree/venv hashing, matched A/B timing, and visual QA remain `NOT_RUN`
-until the bound-host run.
+modules, and the Python environment remain outside the current lock. The
+2026-08-14 bound-host smoke passed media/full-decode and five-frame visual
+review; full-tree/venv closure, matched A/B timing, native control and full
+quality review remain `NOT_RUN`.
 The driver is a one-shot process-bound child: it stops and joins its private
 loopback server before returning, and process exit owns final Comfy cleanup.
 
@@ -239,5 +269,6 @@ python scripts/perf002_comfy_trace.py `
   --attention-trace E:\private\perf002\comfy-smoke\attention.json
 ```
 
-The real GPU driver, model availability, full decode and five-frame visual
-review remain `NOT_RUN` until this command is executed on the bound host.
+The bound-host smoke has now executed and passed media/full-decode and
+five-frame visual review. The required 124-frame matched A/B, native-control
+comparison and PERF-001 gates remain `NOT_RUN`.

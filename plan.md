@@ -471,7 +471,7 @@ traffic counters and media QA evidence.
 | ID | Change | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
 | PERF-001 | Wall/I/O/H2D/wait profiler + JSON report | none | >=95% wall accounting, <2% disabled overhead |
-| PERF-002 | Reproducible ComfyUI/h3cspeed A/B manifest/driver | PERF-001 | 002A/B manifest/media + 002C isolated adapter and h3 runtime trace producer implemented; real engine runs `NOT_RUN` |
+| PERF-002 | Reproducible ComfyUI/h3cspeed A/B manifest/driver | PERF-001 | 002A/B manifest/media + 002C isolated adapter and h3 runtime trace producer implemented; bound-host 22-frame smokes `SMOKE_PASS`; matched A/B `NOT_RUN` |
 | PERF-003 | F32 hidden-pool state-size spike + tile/layer parity harness | PERF-001 | ownership/memory model + same-latent 22-frame proof |
 | PERF-004 | Layer-major F32 VAE execution via verified overlay | PERF-003 | <40 GiB upload target, >=3x VAE wall speedup |
 | PERF-005 | Double-buffered async refill primitives | PERF-001 | event-safe focused overlap trace |
@@ -497,39 +497,38 @@ traffic counters and media QA evidence.
 
 ## 11. Immediate next change
 
-Continue **PERF-002** by supplying the real ComfyUI trace producer and then
-running the bounded 22-frame/2-step engine smokes. The h3cspeed producer now
-records actual serving sigma arrays and `dit_bf16` Sage hit/expected-native/
-unexpected-fallback counters through opt-in, no-clobber trace files. Immutable
-input manifests hash actual bound files
-without retaining private paths or prompt text; 002C now rechecks those inputs
-before/after each engine, verifies 22-frame media and requires scheduler/Sage
-evidence. The repo-owned Comfy producer now starts the bound ComfyUI checkout in
-an isolated in-process child, queues the fixed first-frame I2VA graph, captures
-the actual T8 sampler/raw-audio/Sage calls, and publishes only the real
-`SaveVideo` output; no synthetic media path is accepted. The adapter, synthetic
-child and h3 trace producer contract PASS. The h3 direct-binary contract now
-requires a pre-generated v2 FL2VA sidecar and canonical first frame, binds
-`H3CSPEED_TEXT_EMBEDDING` to the manifest conditioning sidecar and
-`H3CSPEED_TEXT_ENCODER_SHA256` to the manifest Qwen hash, and rejects duplicate
-or downgraded geometry flags. It parses and binds the v2 first-frame sidecar,
-requires TF32 off and Sage selected, rejects extra positional arguments, and
-closes the native inventory over four exact weight paths plus the transformer,
-tokenizer and VAE configs. The h3 sidecar is the single immutable composite
-conditioning artifact, while ComfyUI retains separate token/tag/hidden
-bindings. Native decode/mux FFmpeg and QA FFmpeg/FFprobe are also hashed and
-path-bound. It checks every bound input before and after the child. A real
-sidecar-backed h3 run remains `NOT_RUN`; the contract and synthetic fake-h3
-E2E are portable evidence only. Both real engine runs and
-whole-process stage timers remain `NOT_RUN` until the driver is executed on the
-bound GPU. The matched
-864x480 124-frame 8-step cold plus three-warm A/B, PERF-001 95% critical-path
-coverage and 22-frame disabled-overhead gate remain `NOT_RUN`; they must not be
-inferred from the schema or synthetic media PASS.
+Continue **PERF-002/PERF-004** from the real bound-host smoke baseline. The
+immutable manifest SHA is
+`49bb685df675dcf265fe87c5b95fc6587c7a42e6737dad427325be8de3cdf264`.
+The isolated 864x480/22-frame/2-step h3cspeed smoke passed in 688.2388647 s
+with Sage hits 102/fallbacks 0; ComfyUI passed in 397.98855 s with Sage hits
+100/fallbacks 0. Both outputs passed H.264/AAC media QA, full decode and five
+frame visual inspection. These isolated wall times are not a fair speed
+ranking because startup, conditioning and cache behavior differ.
 
-The Comfy producer currently binds a bounded entry-point file set (main.py,
-T8 sampling/nodes, attention.py, and four model files), not the full runtime
-import closure or Python-environment lock. Full closure hashing, matched A/B
-timing, native-control comparison, and visual QA remain pending until a real
-bound-host run. `expected_native_calls: 0` in the Comfy attention trace is an
+The next bounded optimization is to analyze and reduce the h3cspeed Video VAE
+decoder's measured 72.23 GiB upload traffic (and its 116.592 s DiT/overall
+critical path accounting) while preserving same-latent numerical parity,
+BF16 boundaries, native tensor layout, and the shared low-VRAM budget. Re-run
+the focused 864x480/22-frame VAE traffic/parity gates after each change and
+record upload bytes, peak VRAM/RAM, wall time and full media evidence. In
+parallel, prepare the complete matched 864x480/124-frame/8-step matrix with
+one cold plus three warm trials per engine, complete runtime/source closure,
+and the PERF-001 95% wall-accounting plus disabled-overhead gates.
+
+The h3cspeed producer records actual serving sigma arrays and `dit_bf16` Sage
+hit/expected-native/unexpected-fallback counters through opt-in, no-clobber
+trace files. The Comfy producer starts the bound checkout in an isolated
+in-process child, queues the fixed first-frame I2VA graph, captures actual T8
+sampler/raw-audio/Sage calls, and publishes only the real `SaveVideo` output.
+The h3 direct-binary contract binds the v2 FL2VA sidecar, canonical first
+frame, Qwen hash, exact native FL2VA inventory, FFmpeg tools and trace paths.
+The Comfy producer still binds a bounded entry-point file set rather than the
+full runtime import closure or Python-environment lock; those closure hashes,
+native-control comparison, matched A/B timing, and quality review remain
+pending. `expected_native_calls: 0` in the Comfy attention trace is an
 explicit no-control-run marker, not native-control evidence.
+
+The matched 124-frame/8-step cold-plus-three-warm A/B, PERF-001 95%
+critical-path coverage and disabled-overhead gate remain `NOT_RUN`; they must
+not be inferred from the isolated smoke `SMOKE_PASS` results.

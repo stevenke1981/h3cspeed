@@ -61,7 +61,7 @@ if raise_code: raise SystemExit(raise_code)
 with open(scheduler, 'w', encoding='utf-8') as f:
  json.dump({'schema_version':1,'engine':engine,'sampler':'dual_clock_euler',
  'schedule':'native_flow','video_shift':12.0,'audio_shift':3.0,
- 'width':864,'height':480,'frames':22,'steps':2,'layers':50,'seed':42,
+ 'width':864,'height':480,'frames':22,'fps':24,'steps':2,'layers':50,'seed':42,
  'sigma_video':[1.0,0.5,0.0],'sigma_audio':[1.0,0.5,0.0],
  'raw_audio_protocol_verified':True}, f)
 with open(attention, 'w', encoding='utf-8') as f:
@@ -262,6 +262,56 @@ def create_manifest(root: Path, perf002, command_driver: Path,
 
 
 class Perf002SmokeTests(unittest.TestCase):
+    def test_private_environment_preserves_username_but_drops_unapproved_host_values(self) -> None:
+        smoke = load_script("run_perf002_smoke")
+        with mock.patch.dict(os.environ, {
+            "USERNAME": "perf002-test-user",
+            "PERF002_PRIVATE_SECRET": "must-not-cross-boundary",
+        }, clear=False):
+            environment = smoke._private_environment({})
+        self.assertEqual(environment.get("USERNAME"), "perf002-test-user")
+        self.assertNotIn("PERF002_PRIVATE_SECRET", environment)
+
+    def test_scheduler_evidence_engine_specific_fps_contract(self) -> None:
+        smoke = load_script("run_perf002_smoke")
+        base = {
+            "schema_version": 1, "engine": "comfyui",
+            "sampler": "dual_clock_euler", "schedule": "native_flow",
+            "video_shift": 12.0, "audio_shift": 3.0,
+            "sigma_video": [1.0, 0.5, 0.0],
+            "sigma_audio": [1.0, 0.5, 0.0],
+            "raw_audio_protocol_verified": True,
+            "width": 864, "height": 480, "frames": 22, "fps": 24,
+            "steps": 2, "layers": 50, "seed": 42,
+        }
+        h3 = dict(base)
+        h3["engine"] = "h3cspeed"
+        h3.pop("fps")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "scheduler.json"
+            path.write_text(json.dumps(h3), encoding="utf-8")
+            self.assertEqual(
+                smoke._scheduler_evidence(path, "h3cspeed")["sampler"],
+                "dual_clock_euler")
+
+            path.write_text(json.dumps(base), encoding="utf-8")
+            self.assertEqual(
+                smoke._scheduler_evidence(path, "comfyui")["sampler"],
+                "dual_clock_euler")
+            for label, mutation, message in (
+                ("missing fps", lambda report: report.pop("fps"), "schema"),
+                ("wrong fps", lambda report: report.update({"fps": 30}), "integer 24 fps"),
+                ("float fps", lambda report: report.update({"fps": 24.0}), "integer 24 fps"),
+                ("boolean fps", lambda report: report.update({"fps": True}), "integer 24 fps"),
+                ("extra field", lambda report: report.update({"extra": True}), "schema"),
+            ):
+                with self.subTest(label=label):
+                    invalid = dict(base)
+                    mutation(invalid)
+                    path.write_text(json.dumps(invalid), encoding="utf-8")
+                    with self.assertRaisesRegex(smoke.ContractError, message):
+                        smoke._scheduler_evidence(path, "comfyui")
+
     def test_runtime_directory_is_comfy_only(self) -> None:
         smoke = load_script("run_perf002_smoke")
         self.assertIn("model_root", smoke._required_config_fields("h3cspeed"))

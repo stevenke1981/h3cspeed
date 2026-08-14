@@ -224,10 +224,12 @@ calling this an architecture-wide production release.
   overwrite, symlink/reparse inputs and unmatched algorithm-parity schedules.
 - Synthetic 864x480/124-frame media harness: PASS with real ffprobe, full
   ffmpeg video/audio decode, 32 kHz stereo non-silent PCM and five PNG hashes.
-- ComfyUI/h3cspeed 22-frame runtime adapters: NOT RUN.
+- ComfyUI/h3cspeed 22-frame runtime adapters: PASS on the bound host; see the
+  PERF-002C smoke evidence below.
 - Matched 864x480/124-frame/8-step cold plus three-warm A/B: NOT RUN.
 - Scheduler sigma/raw-audio evidence and actual Sage hit/fallback traces:
-  NOT RUN. No performance, quality-parity or speedup claim is made.
+  PASS for the two isolated 22-frame smokes. No matched performance,
+  quality-parity or speedup claim is made.
 
 ## PERF-002C isolated 22-frame adapter (2026-08-14)
 
@@ -240,9 +242,31 @@ calling this an architecture-wide production release.
   is present in the result.
 - Output/source/ComfyUI/model isolation and Sage-fallback rejection: PASS in
   focused tests.
-- Real h3cspeed 22-frame/2-step smoke: NOT RUN.
-- Real ComfyUI 22-frame/2-step smoke: NOT RUN.
+- Real h3cspeed 22-frame/2-step smoke: SMOKE_PASS on the bound host.
+- Real ComfyUI 22-frame/2-step smoke: SMOKE_PASS on the bound host.
 - Matched A/B timing and quality conclusion: NOT RUN.
+
+## PERF-002C bound-host smoke evidence (2026-08-14)
+
+- Immutable input manifest SHA-256:
+  `49bb685df675dcf265fe87c5b95fc6587c7a42e6737dad427325be8de3cdf264`.
+- h3cspeed: `SMOKE_PASS`, wall `688.2388647 s`, media SHA-256
+  `54077780f5d45cfcd9d5b44b0fea91cea9c4fc15dceecf31cd60d376c9795f5b`,
+  816,597 bytes, duration 0.925 s, `864x480/22f/24fps`, H.264/AAC stereo,
+  non-silent audio and full decode. The runtime trace recorded Sage hits 102,
+  unexpected fallbacks 0, DiT denoise 116.592 s, and Video VAE upload traffic
+  72.23 GiB.
+- ComfyUI: `SMOKE_PASS`, wall `397.98855 s`, media SHA-256
+  `bb8dc8697c68a3f3a55d47038f138541bea467ffd54b7e828dacece5c9bbc6b8`,
+  386,003 bytes, duration 0.917 s, `864x480/22f/24fps`, H.264/AAC stereo,
+  non-silent audio and full decode. The runtime trace recorded Sage hits 100,
+  unexpected fallbacks 0, and prompt execution 307.74 s.
+- Five extracted frames from each output were inspected and were clear/full
+  width; this is visual smoke evidence only, not a 124-frame quality result.
+- These wall times are isolated smoke timings with different engine startup,
+  conditioning and cache behavior. They are not a fair speed ranking. The
+  matched 124-frame/8-step one-cold-plus-three-warm A/B remains `NOT RUN`, and
+  PERF-001 95% wall-accounting/disabled-overhead gates remain `NOT RUN`.
 
 ## PERF-002C h3 runtime evidence producer (2026-08-14)
 
@@ -256,8 +280,9 @@ calling this an architecture-wide production release.
 - Trace publication rejects one-sided/relative/concurrent/existing targets,
   uses exclusive temporary files and no-clobber publication, and aborts state
   on generation cleanup. Overlay CTest passed 17/17; API remains 103/103.
-- Real h3cspeed and ComfyUI 22-frame/2-step runs remain `NOT RUN`; this producer
-  change does not establish matched throughput, quality parity or a speedup.
+- The real h3cspeed and ComfyUI 22-frame/2-step bound-host smokes now pass;
+  this producer change still does not establish matched throughput, quality
+  parity or a speedup.
 
 ## PERF-002C ComfyUI producer/startup preflight (2026-08-14)
 
@@ -274,10 +299,10 @@ calling this an architecture-wide production release.
 - The startup emitted an asyncio pending-accept cleanup warning while the
   one-shot process was closing. The producer therefore remains process-bound;
   reusable in-process lifecycle support is not claimed.
-- No model was loaded and no graph was queued in this preflight. Real
-  864x480/22-frame/2-step media, scheduler/Sage runtime traces, full source and
-  Python-environment closure, native control, visual QA and matched A/B timing
-  all remain `NOT RUN`.
+- No model was loaded and no graph was queued in this historical startup
+  preflight. The subsequent bound-host smoke loaded the model and produced
+  real media/traces; full source and Python-environment closure, native
+  control, and matched A/B timing remain `NOT RUN`.
 
 ## PERF-002C h3 direct-binary binding preflight (2026-08-14)
 
@@ -301,8 +326,8 @@ calling this an architecture-wide production release.
   normalized to exact RGB24 864x480. Its SHA-256 is
   `210A7F41E2B0030388030AFF170296FE8BC9F5D464FD43F0BA8104404A0D66D4`;
   it has full-width content rather than the former blurred side-fill layout.
-- The RTX 3070 Ti still had another user process holding about 3.3 GiB VRAM,
-  leaving less than the measured h3cspeed budget. No process was terminated
-  and no real inference was started. The real sidecar-backed h3 smoke remains
-  `NOT RUN`; an individual future `SMOKE_PASS` will still not be matched A/B or
-  a speed/quality result.
+- This preflight was recorded before the user process was released. After a
+  fresh GPU gate, the current sidecar-backed h3 and ComfyUI smokes both
+  reached `SMOKE_PASS`; an individual `SMOKE_PASS` is still not matched A/B
+  or a speed/quality result. The full hashes and timings are recorded in the
+  bound-host smoke evidence above.

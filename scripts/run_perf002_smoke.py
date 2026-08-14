@@ -46,7 +46,8 @@ ALLOWED_ENVIRONMENT = {
 }
 BASE_ENVIRONMENT = {
     "APPDATA", "COMSPEC", "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA",
-    "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR",
+    "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERNAME", "USERPROFILE",
+    "WINDIR",
 }
 COMFY_INPUT_FLAGS = {
     "--comfy-main": "comfy_main",
@@ -775,8 +776,14 @@ def _scheduler_evidence(path: Path, engine: str) -> dict[str, Any]:
                 "audio_shift", "sigma_video", "sigma_audio",
                 "raw_audio_protocol_verified", "width", "height", "frames",
                 "steps", "layers", "seed"}
+    if engine == "comfyui":
+        required.add("fps")
     if set(report) != required or report.get("schema_version") != 1 or report.get("engine") != engine:
         raise ContractError("scheduler trace schema or engine is invalid")
+    if engine == "comfyui":
+        fps = report.get("fps")
+        if not isinstance(fps, int) or isinstance(fps, bool) or fps != 24:
+            raise ContractError("ComfyUI scheduler trace must report integer 24 fps")
     if (report.get("sampler"), report.get("schedule"), report.get("video_shift"),
             report.get("audio_shift"), report.get("raw_audio_protocol_verified")) != (
             "dual_clock_euler", "native_flow", 12.0, 3.0, True):
