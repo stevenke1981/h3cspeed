@@ -258,3 +258,23 @@ calling this an architecture-wide production release.
   on generation cleanup. Overlay CTest passed 17/17; API remains 103/103.
 - Real h3cspeed and ComfyUI 22-frame/2-step runs remain `NOT RUN`; this producer
   change does not establish matched throughput, quality parity or a speedup.
+
+## PERF-002C ComfyUI producer/startup preflight (2026-08-14)
+
+- The repo-owned one-shot ComfyUI producer and adapter contract passed 31
+  focused Python tests with 2 environment-dependent skips; the portable
+  overlay passed 18/18. Python compilation, C/CUDA source syntax, pinned
+  upstream verification and API coverage 103/103 also passed.
+- A real no-inference startup preflight used the bound
+  `E:\minimax-h3\.venv` environment, RTX 3070 Ti, PyTorch 2.11.0+cu130 and
+  the external ComfyUI checkout. The private loopback server became ready in
+  108.6 seconds with isolated input/output/temp/user/database paths, Sage
+  selected, and only `comfyui-minimax-h3-audio-T8` whitelisted; the other
+  installed H3 custom nodes were explicitly skipped. The process exited 0.
+- The startup emitted an asyncio pending-accept cleanup warning while the
+  one-shot process was closing. The producer therefore remains process-bound;
+  reusable in-process lifecycle support is not claimed.
+- No model was loaded and no graph was queued in this preflight. Real
+  864x480/22-frame/2-step media, scheduler/Sage runtime traces, full source and
+  Python-environment closure, native control, visual QA and matched A/B timing
+  all remain `NOT RUN`.

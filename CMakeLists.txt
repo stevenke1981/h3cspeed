@@ -90,6 +90,8 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_perf002_runner.py)
     add_test(NAME perf002_smoke_adapter
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_perf002_smoke.py)
+    add_test(NAME perf002_comfy_trace_contract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_perf002_comfy_trace.py)
     add_test(NAME online_softmax_math
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_online_softmax.py)
     add_test(NAME quantized_sidecar_v2

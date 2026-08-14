@@ -504,9 +504,21 @@ unexpected-fallback counters through opt-in, no-clobber trace files. Immutable
 input manifests hash actual bound files
 without retaining private paths or prompt text; 002C now rechecks those inputs
 before/after each engine, verifies 22-frame media and requires scheduler/Sage
-evidence. The adapter, synthetic child and h3 trace producer contract PASS, but
+evidence. The repo-owned Comfy producer now starts the bound ComfyUI checkout in
+an isolated in-process child, queues the fixed first-frame I2VA graph, captures
+the actual T8 sampler/raw-audio/Sage calls, and publishes only the real
+`SaveVideo` output; no synthetic media path is accepted. The adapter, synthetic
+child and h3 trace producer contract PASS, but
 both real engine runs and
-whole-process stage timers remain `NOT_RUN`. The matched
+whole-process stage timers remain `NOT_RUN` until the driver is executed on the
+bound GPU. The matched
 864x480 124-frame 8-step cold plus three-warm A/B, PERF-001 95% critical-path
 coverage and 22-frame disabled-overhead gate remain `NOT_RUN`; they must not be
 inferred from the schema or synthetic media PASS.
+
+The Comfy producer currently binds a bounded entry-point file set (main.py,
+T8 sampling/nodes, attention.py, and four model files), not the full runtime
+import closure or Python-environment lock. Full closure hashing, matched A/B
+timing, native-control comparison, and visual QA remain pending until a real
+bound-host run. `expected_native_calls: 0` in the Comfy attention trace is an
+explicit no-control-run marker, not native-control evidence.

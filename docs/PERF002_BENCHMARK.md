@@ -19,7 +19,9 @@ not establish a speed result.
 - SageAttention is accepted only when the runtime trace is scoped to
   `dit_bf16`, records at least one real backend hit and reports zero
 `unexpected_fallbacks`. `expected_native_calls` records the explicit
-native/unset backend control run; a BF16 call that requested Sage but is
+native/unset backend control run when that separate run is performed; the
+bounded Comfy producer writes `0` because it does not execute that control,
+which is not native-path evidence. A BF16 call that requested Sage but is
 ineligible is an unexpected fallback. F32 VAE calls are outside this scope. A
 requested flag or aggregate dispatch count is not backend evidence.
 - One cold and at least three warm trials per engine. Conditioning, model load,
@@ -116,3 +118,69 @@ python scripts/run_perf002_smoke.py `
 always keeps `matched_ab_status: NOT_RUN`; it cannot establish throughput or
 quality parity. Run ComfyUI with a separate config and directory. Neither
 engine reads or overwrites the other's output.
+
+## Repo-owned ComfyUI smoke driver
+
+`scripts/perf002_comfy_trace.py` is the ComfyUI-side `argv[1]` driver for the
+isolated adapter. It starts the bound ComfyUI checkout in-process on a random
+loopback port, sends the fixed first-frame `I2VA` FL2VA graph at 864x480,
+22 frames, two `dual_clock_euler/native_flow` steps and seed 42, then copies the
+real `SaveVideo` output into the private result directory. ComfyUI output,
+input, temporary files, user data and its SQLite database are redirected to a
+new private runtime directory; the source/custom-node/model trees are not
+written. Python bytecode generation is disabled for the child.
+
+The driver wraps the loaded T8 `setup_dual_clock_sampling` and
+`sample_minimax_h3_dual_clock_euler` functions, and the loaded ComfyUI
+`sageattn`/`attention_pytorch` globals. It publishes scheduler and attention
+JSON only after the actual graph completes, the raw-audio update count equals
+the requested steps, at least one Sage backend call occurred and no fallback
+was observed. Trace and media publishing are no-clobber operations. A startup,
+graph, media, scheduler or Sage failure leaves the smoke unverified and exits
+non-zero; it does not create a synthetic replacement file.
+
+This producer deliberately binds a bounded entry-point file set: `main.py`,
+the T8 `sampling.py`/`nodes.py`, ComfyUI `attention.py`, and the four model
+files. This is not the runtime import closure: T8 helpers, other ComfyUI model
+modules, and the Python environment remain outside the current lock.
+Full-tree/venv hashing, matched A/B timing, and visual QA remain `NOT_RUN`
+until the bound-host run.
+The driver is a one-shot process-bound child: it stops and joins its private
+loopback server before returning, and process exit owns final Comfy cleanup.
+
+The 002C command config must declare `command_inputs` for all eight producer
+flags. Each entry maps to the manifest's `engines.comfyui` labels
+`comfy_main`, `t8_sampling`, `t8_nodes`, `comfy_attention`, `model_file`,
+`clip_file`, `video_vae_file`, and `audio_vae_file`; the adapter rehashes each
+absolute argv path before and after execution.
+The config must also declare `runtime_dir`; the matching argument must name a
+new or empty non-linked directory outside the source, ComfyUI, and model roots.
+The reference PNG, prompt file, output media, and both trace arguments are
+required exactly once and must equal the corresponding private config values.
+The Comfy attention report's
+`expected_native_calls: 0` means this bounded run did not execute the separate
+h3cspeed native-control path; it is not a native-control PASS.
+
+Example private command shape (paths and model names are local bindings and
+must not be copied into evidence):
+
+```powershell
+python scripts/perf002_comfy_trace.py `
+  --comfy-main E:\minimax-h3\ComfyUI\main.py `
+  --t8-sampling E:\minimax-h3\ComfyUI\custom_nodes\comfyui-minimax-h3-audio-T8\sampling.py `
+  --t8-nodes E:\minimax-h3\ComfyUI\custom_nodes\comfyui-minimax-h3-audio-T8\nodes.py `
+  --comfy-attention E:\minimax-h3\ComfyUI\comfy\ldm\modules\attention.py `
+  --model-file E:\minimax-h3\ComfyUI\models\diffusion_models\minimax_h3_fl2va_pruned_int8_convrot.safetensors `
+  --clip-file E:\minimax-h3\ComfyUI\models\text_encoders\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors `
+  --video-vae-file E:\minimax-h3\ComfyUI\models\vae\minimax_h3_video_vae_fp16.safetensors `
+  --audio-vae-file E:\minimax-h3\ComfyUI\models\vae\minimax_h3_audio_vae_fp32.safetensors `
+  --runtime-dir E:\private\perf002\comfy-runtime `
+  --reference-png E:\private\perf002\reference-864x480.png `
+  --prompt-file E:\private\perf002\prompt.txt `
+  --output-media E:\private\perf002\comfy-smoke\smoke.mp4 `
+  --scheduler-trace E:\private\perf002\comfy-smoke\scheduler.json `
+  --attention-trace E:\private\perf002\comfy-smoke\attention.json
+```
+
+The real GPU driver, model availability, full decode and five-frame visual
+review remain `NOT_RUN` until this command is executed on the bound host.

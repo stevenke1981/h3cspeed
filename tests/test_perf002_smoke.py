@@ -44,7 +44,11 @@ def write_png(path: Path) -> None:
 def write_fake_engine(path: Path) -> None:
     path.write_text(
         """import json, subprocess, sys
-engine, media, scheduler, attention, ffmpeg = sys.argv[1:]
+def value(flag):
+    return sys.argv[sys.argv.index(flag) + 1]
+engine = 'comfyui'
+media, scheduler, attention, ffmpeg = (value('--output-media'),
+    value('--scheduler-trace'), value('--attention-trace'), value('--ffmpeg'))
 command = [ffmpeg, '-v', 'error', '-y', '-f', 'lavfi', '-i',
  'testsrc2=size=864x480:rate=24', '-f', 'lavfi', '-i',
  'sine=frequency=440:sample_rate=32000', '-t', '0.925', '-frames:v', '22',
@@ -106,7 +110,10 @@ def create_manifest(root: Path, perf002, command_driver: Path) -> tuple[Path, di
         "models": {engine: labels["models"] for engine in perf002.ENGINES},
         "conditioning": {engine: labels["conditioning"] for engine in perf002.ENGINES},
         "engines": {"h3cspeed": labels["engines"],
-                    "comfyui": ["source", "python_env"]},
+                    "comfyui": ["source", "python_env", "comfy_main",
+                                 "t8_sampling", "t8_nodes", "comfy_attention",
+                                 "model_file", "clip_file", "video_vae_file",
+                                 "audio_vae_file"]},
         "hardware": {"gpu_uuid": "GPU-test", "gpu_name": "RTX-3070-Ti",
                      "sm": "sm86", "vram_bytes": 8 * 1024**3,
                      "driver": "test", "toolkit": "CUDA-13.2"},
@@ -131,11 +138,18 @@ def create_manifest(root: Path, perf002, command_driver: Path) -> tuple[Path, di
     manifest_path = root / "input-manifest.json"
     perf002.publish_json(manifest_path, manifest)
     config = {"reference_png": str(reference), "prompt_file": str(prompt),
-              "bindings": bindings}
+            "bindings": bindings}
     return manifest_path, config
 
 
 class Perf002SmokeTests(unittest.TestCase):
+    def test_runtime_directory_is_comfy_only(self) -> None:
+        smoke = load_script("run_perf002_smoke")
+        self.assertNotIn("runtime_dir", smoke._required_config_fields("h3cspeed"))
+        self.assertNotIn("command_inputs", smoke._required_config_fields("h3cspeed"))
+        self.assertIn("runtime_dir", smoke._required_config_fields("comfyui"))
+        self.assertIn("command_inputs", smoke._required_config_fields("comfyui"))
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
                          "ffmpeg and ffprobe are required")
     def test_isolated_process_smoke_binds_evidence_without_claiming_ab(self) -> None:
@@ -158,17 +172,42 @@ class Perf002SmokeTests(unittest.TestCase):
             media = engine_dir / "smoke.mp4"
             scheduler = engine_dir / "scheduler.json"
             attention = engine_dir / "attention.json"
+            runtime = root / "comfy-runtime"
             config.update({
                 "schema_version": 1, "engine": "comfyui",
-                "argv": [sys.executable, str(child), "comfyui", str(media), str(scheduler),
-                         str(attention), shutil.which("ffmpeg") or "ffmpeg"],
+                "argv": [sys.executable, str(child),
+                         "--comfy-main", config["bindings"]["engines"]["comfyui"]["comfy_main"],
+                         "--t8-sampling", config["bindings"]["engines"]["comfyui"]["t8_sampling"],
+                         "--t8-nodes", config["bindings"]["engines"]["comfyui"]["t8_nodes"],
+                         "--comfy-attention", config["bindings"]["engines"]["comfyui"]["comfy_attention"],
+                         "--model-file", config["bindings"]["engines"]["comfyui"]["model_file"],
+                         "--clip-file", config["bindings"]["engines"]["comfyui"]["clip_file"],
+                         "--video-vae-file", config["bindings"]["engines"]["comfyui"]["video_vae_file"],
+                         "--audio-vae-file", config["bindings"]["engines"]["comfyui"]["audio_vae_file"],
+                         "--reference-png", config["reference_png"],
+                         "--prompt-file", config["prompt_file"],
+                         "--runtime-dir", str(runtime),
+                         "--output-media", str(media), "--scheduler-trace", str(scheduler),
+                         "--attention-trace", str(attention), "--ffmpeg",
+                         shutil.which("ffmpeg") or "ffmpeg"],
                 "environment": {"PYTHONUTF8": "1"},
                 "output_media": str(media), "scheduler_trace": str(scheduler),
                 "attention_trace": str(attention),
+                "runtime_dir": str(runtime),
                 "protected_roots": protected,
                 "command_artifacts": {
                     "executable": {"label": "python_env", "argv_index": 0},
                     "driver": {"label": "source", "argv_index": 1},
+                },
+                "command_inputs": {
+                    "--comfy-main": {"section": "engines", "label": "comfy_main"},
+                    "--t8-sampling": {"section": "engines", "label": "t8_sampling"},
+                    "--t8-nodes": {"section": "engines", "label": "t8_nodes"},
+                    "--comfy-attention": {"section": "engines", "label": "comfy_attention"},
+                    "--model-file": {"section": "engines", "label": "model_file"},
+                    "--clip-file": {"section": "engines", "label": "clip_file"},
+                    "--video-vae-file": {"section": "engines", "label": "video_vae_file"},
+                    "--audio-vae-file": {"section": "engines", "label": "audio_vae_file"},
                 },
             })
             config_path = root / "command.json"
@@ -184,6 +223,14 @@ class Perf002SmokeTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(smoke.ContractError, r"argv\[1\]"):
                 smoke._validate_command(bad_config, manifest, "comfyui")
+            bad_reference = dict(config)
+            bad_reference["argv"] = list(config["argv"])
+            alternate_reference = root / "alternate.png"
+            write_png(alternate_reference)
+            reference_index = bad_reference["argv"].index("--reference-png") + 1
+            bad_reference["argv"][reference_index] = str(alternate_reference)
+            with self.assertRaisesRegex(smoke.ContractError, "reference PNG"):
+                smoke._validate_command(bad_reference, manifest, "comfyui")
             result_path = smoke.run_smoke(
                 manifest_path, config_path, evidence_dir,
                 shutil.which("ffmpeg") or "ffmpeg",
@@ -198,10 +245,16 @@ class Perf002SmokeTests(unittest.TestCase):
             self.assertNotIn("private fox prompt", serialized)
             self.assertNotIn(str(root), serialized)
             with self.assertRaisesRegex(smoke.ContractError, "outside protected"):
+                protected_runtime = Path(protected[0]) / "runtime"
+                config["runtime_dir"] = str(protected_runtime)
+                runtime_index = config["argv"].index("--runtime-dir") + 1
+                config["argv"][runtime_index] = str(protected_runtime)
+                config_path.write_text(json.dumps(config), encoding="utf-8")
                 smoke.run_smoke(
                     manifest_path, config_path, Path(protected[0]),
                     shutil.which("ffmpeg") or "ffmpeg",
                     shutil.which("ffprobe") or "ffprobe", 60)
+            self.assertFalse(protected_runtime.exists())
 
     def test_attention_fallback_is_rejected(self) -> None:
         smoke = load_script("run_perf002_smoke")

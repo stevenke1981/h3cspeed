@@ -25,7 +25,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from run_perf002_ab import (  # noqa: E402
-    ContractError, ENGINES, canonical_bytes, load_input, png_dimensions,
+    ContractError, ENGINES, _reject_link_chain, canonical_bytes, load_input, png_dimensions,
     publish_json, safe_existing_directory, safe_output_directory, safe_regular,
     sha256_bytes, sha256_file, validate_media_contract,
 )
@@ -45,6 +45,26 @@ BASE_ENVIRONMENT = {
     "APPDATA", "COMSPEC", "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA",
     "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR",
 }
+COMFY_INPUT_FLAGS = {
+    "--comfy-main": "comfy_main",
+    "--t8-sampling": "t8_sampling",
+    "--t8-nodes": "t8_nodes",
+    "--comfy-attention": "comfy_attention",
+    "--model-file": "model_file",
+    "--clip-file": "clip_file",
+    "--video-vae-file": "video_vae_file",
+    "--audio-vae-file": "audio_vae_file",
+}
+BASE_CONFIG_FIELDS = {
+    "schema_version", "engine", "argv", "environment", "output_media",
+    "scheduler_trace", "attention_trace", "protected_roots", "reference_png",
+    "prompt_file", "bindings", "command_artifacts",
+}
+
+
+def _required_config_fields(engine: str) -> set[str]:
+    return BASE_CONFIG_FIELDS | (
+        {"runtime_dir", "command_inputs"} if engine == "comfyui" else set())
 
 
 if os.name == "nt":
@@ -363,6 +383,82 @@ def _validate_command(config: dict[str, Any], manifest: dict[str, Any],
           command_artifacts["driver"]["label"] != "source" or
           len(argv) < 2 or argv[1].startswith("-")):
         raise ContractError("ComfyUI smoke must execute its bound driver as argv[1]")
+    command_inputs = _mapping(config.get("command_inputs", {}), "command_inputs")
+    if engine == "comfyui":
+        if set(command_inputs) != set(COMFY_INPUT_FLAGS):
+            raise ContractError("ComfyUI smoke must bind all source/model input flags")
+        for flag, expected_label in COMFY_INPUT_FLAGS.items():
+            entry = _mapping(command_inputs.get(flag), f"command_inputs.{flag}")
+            if set(entry) != {"section", "label"} or entry.get("section") != "engines":
+                raise ContractError(f"command_inputs.{flag} must bind engines label")
+            label = entry.get("label")
+            if label != expected_label or label not in manifest_hashes or label not in bound_paths:
+                raise ContractError(f"command_inputs.{flag} is not manifest-bound")
+            indices = [index for index, value in enumerate(argv) if value == flag]
+            if len(indices) != 1 or indices[0] + 1 >= len(argv):
+                raise ContractError(f"ComfyUI smoke flag {flag} must have one path")
+            argument = Path(argv[indices[0] + 1])
+            if not argument.is_absolute():
+                raise ContractError(f"ComfyUI smoke path after {flag} must be absolute")
+            argument = safe_regular(argument, f"command_inputs.{flag}")
+            bound = safe_regular(Path(bound_paths[label]), f"command_inputs.{flag}")
+            if argument != bound or sha256_file(bound) != manifest_hashes[label]:
+                raise ContractError(f"command_inputs.{flag} does not match the manifest")
+            argv[indices[0] + 1] = str(argument)
+
+        immutable_paths = (
+            ("--reference-png", "reference_png", "reference PNG",
+             manifest["fixture"]["sha256"]),
+            ("--prompt-file", "prompt_file", "prompt file",
+             manifest["prompt_sha256"]),
+        )
+        for flag, config_key, label, expected_hash in immutable_paths:
+            indices = [index for index, value in enumerate(argv) if value == flag]
+            if len(indices) != 1 or indices[0] + 1 >= len(argv):
+                raise ContractError(f"ComfyUI smoke flag {flag} must have one path")
+            configured = safe_regular(Path(config[config_key]), label)
+            argument = safe_regular(Path(argv[indices[0] + 1]), f"{label} argv item")
+            if argument != configured or sha256_file(configured) != expected_hash:
+                raise ContractError(f"{label} does not match the immutable manifest")
+            argv[indices[0] + 1] = str(argument)
+
+        for flag, config_key, label in (
+                ("--output-media", "output_media", "output media"),
+                ("--scheduler-trace", "scheduler_trace", "scheduler trace"),
+                ("--attention-trace", "attention_trace", "attention trace")):
+            indices = [index for index, value in enumerate(argv) if value == flag]
+            if len(indices) != 1 or indices[0] + 1 >= len(argv):
+                raise ContractError(f"ComfyUI smoke flag {flag} must have one path")
+            configured = Path(config[config_key])
+            argument = Path(argv[indices[0] + 1])
+            if not configured.is_absolute() or not argument.is_absolute():
+                raise ContractError(f"{label} must be an absolute path")
+            _reject_link_chain(configured, label)
+            _reject_link_chain(argument, f"{label} argv item")
+            if Path(os.path.abspath(configured)) != Path(os.path.abspath(argument)):
+                raise ContractError(f"{label} does not match the config")
+            argv[indices[0] + 1] = str(Path(os.path.abspath(argument)))
+
+        runtime_indices = [index for index, value in enumerate(argv)
+                           if value == "--runtime-dir"]
+        if len(runtime_indices) != 1 or runtime_indices[0] + 1 >= len(argv):
+            raise ContractError("ComfyUI smoke flag --runtime-dir must have one path")
+        runtime = Path(config["runtime_dir"])
+        argument = Path(argv[runtime_indices[0] + 1])
+        if not runtime.is_absolute() or not argument.is_absolute():
+            raise ContractError("ComfyUI runtime directory must be absolute")
+        _reject_link_chain(runtime, "ComfyUI runtime directory")
+        _reject_link_chain(argument, "ComfyUI runtime argv item")
+        if Path(os.path.abspath(runtime)) != Path(os.path.abspath(argument)):
+            raise ContractError("ComfyUI runtime directory does not match the config")
+        if runtime.exists():
+            if not runtime.is_dir() or any(runtime.iterdir()):
+                raise ContractError("ComfyUI runtime directory must be new or empty")
+        else:
+            safe_existing_directory(runtime.parent, "ComfyUI runtime parent")
+        argv[runtime_indices[0] + 1] = str(Path(os.path.abspath(runtime)))
+    elif command_inputs:
+        raise ContractError("h3cspeed command_inputs must be empty")
     return argv
 
 
@@ -474,21 +570,11 @@ def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
     output = safe_output_directory(output_directory)
     config = _mapping(_load_json(config_path, "private command config"),
                       "private command config")
-    required_config = {"schema_version", "engine", "argv", "environment",
-                       "output_media", "scheduler_trace", "attention_trace",
-                       "protected_roots", "reference_png", "prompt_file", "bindings",
-                       "command_artifacts"}
-    if set(config) != required_config:
-        raise ContractError("private command config has unexpected or missing fields")
     engine = config.get("engine")
     if engine not in ENGINES:
         raise ContractError("unsupported engine")
-    before = verify_bound_inputs(manifest, config, engine)
-    argv = _validate_command(config, manifest, engine)
-    environment = _private_environment(config.get("environment", {}))
-    media = Path(config["output_media"])
-    scheduler_trace = Path(config["scheduler_trace"])
-    attention_trace = Path(config["attention_trace"])
+    if set(config) != _required_config_fields(engine):
+        raise ContractError("private command config has unexpected or missing fields")
     protected_values = config.get("protected_roots")
     if (not isinstance(protected_values, list) or len(protected_values) < 3 or
             not all(isinstance(item, str) and item for item in protected_values)):
@@ -497,8 +583,41 @@ def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
                  for item in protected_values]
     if len(set(protected)) != len(protected):
         raise ContractError("protected_roots must be distinct")
-    for destination in (output, media.parent, scheduler_trace.parent,
-                        attention_trace.parent):
+
+    runtime_candidate: Path | None = None
+    if engine == "comfyui":
+        runtime_candidate = Path(config["runtime_dir"])
+        if not runtime_candidate.is_absolute():
+            raise ContractError("ComfyUI runtime directory must be absolute")
+        _reject_link_chain(runtime_candidate, "ComfyUI runtime directory")
+        runtime_absolute = Path(os.path.abspath(runtime_candidate))
+        for root in protected:
+            try:
+                runtime_absolute.relative_to(root)
+            except ValueError:
+                continue
+            raise ContractError("smoke outputs must be outside protected roots")
+        if runtime_candidate.exists():
+            runtime = safe_existing_directory(runtime_candidate,
+                                              "ComfyUI runtime directory")
+            if any(runtime.iterdir()):
+                raise ContractError("ComfyUI runtime directory must be new or empty")
+        else:
+            safe_existing_directory(runtime_candidate.parent,
+                                    "ComfyUI runtime parent")
+
+    before = verify_bound_inputs(manifest, config, engine)
+    argv = _validate_command(config, manifest, engine)
+    environment = _private_environment(config.get("environment", {}))
+    media = Path(config["output_media"])
+    scheduler_trace = Path(config["scheduler_trace"])
+    attention_trace = Path(config["attention_trace"])
+    destinations = [output, media.parent, scheduler_trace.parent,
+                    attention_trace.parent]
+    if runtime_candidate is not None and runtime_candidate.exists():
+        destinations.append(safe_existing_directory(
+            runtime_candidate, "ComfyUI runtime directory"))
+    for destination in destinations:
         resolved_destination = safe_output_directory(destination)
         for root in protected:
             try:
@@ -514,6 +633,15 @@ def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
     log = output / f"{engine}-smoke-private.log"
     if log.exists() or log.is_symlink():
         raise ContractError("private smoke log already exists")
+    if runtime_candidate is not None and not runtime_candidate.exists():
+        parent = safe_existing_directory(runtime_candidate.parent,
+                                         "ComfyUI runtime parent")
+        runtime_candidate.mkdir(mode=0o700)
+        _reject_link_chain(runtime_candidate, "ComfyUI runtime directory")
+        runtime = safe_existing_directory(runtime_candidate,
+                                          "ComfyUI runtime directory")
+        if runtime.parent != parent:
+            raise ContractError("ComfyUI runtime parent changed during setup")
     started = time.perf_counter()
     return_code = _run_engine(argv, log, environment, timeout_seconds)
     wall = time.perf_counter() - started

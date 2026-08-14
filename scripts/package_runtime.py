@@ -39,6 +39,7 @@ COMMON_SCRIPTS = (
     "scripts/validate_profile_report.py",
     "scripts/run_perf002_ab.py",
     "scripts/run_perf002_smoke.py",
+    "scripts/perf002_comfy_trace.py",
     "scripts/validate_perf002_manifest.py",
 )
 COMMON_PROFILES = (
