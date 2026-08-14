@@ -3,6 +3,10 @@
 #include "h3_dit_schedule.h"
 #include "h3_weights.h"
 
+#ifdef H3CSPEED_CUDA
+#include "h3_gpu_cuda_private.h"
+#endif
+
 #include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -1237,6 +1241,175 @@ static unsigned next_active_block(const h3_dit *dit, unsigned current) {
     return H3_DIT_BLOCKS;
 }
 
+static int dit_prefetch_requested(void) {
+    const char *value = getenv("H3_CUDA_DIT_PREFETCH");
+    return value && !strcmp(value, "1");
+}
+
+#ifdef H3CSPEED_CUDA
+static size_t convrot_prefetch_set(h3_dit *dit, unsigned block,
+                                   int norm1_already_consumed,
+                                   h3_gpu_tensor **tensors,
+                                   const char **names) {
+    h3_dit_block *weight = &dit->blocks[block];
+    h3_gpu_tensor *all_tensors[] = {
+        weight->norm1, weight->norm2,
+        weight->qkv_int8, weight->qkv_scales,
+        weight->q_norm, weight->k_norm,
+        weight->out_int8, weight->out_scales,
+        weight->fc1_int8, weight->fc1_scales,
+        weight->fc2_int8, weight->fc2_scales,
+    };
+    const char *all_names[] = {
+        "norm1", "norm2", "qkv_int8", "qkv_scales", "q_norm", "k_norm",
+        "out_int8", "out_scales", "fc1_int8", "fc1_scales",
+        "fc2_int8", "fc2_scales",
+    };
+    size_t first = norm1_already_consumed ? 1u : 0u;
+    size_t count = 0;
+    for (size_t index = first;
+         index < sizeof(all_tensors) / sizeof(*all_tensors); index++) {
+        tensors[count] = all_tensors[index];
+        names[count] = all_names[index];
+        count++;
+    }
+    return count;
+}
+#endif
+
+static void cancel_convrot_prefetch(h3_dit *dit, unsigned block,
+                                    int norm1_already_consumed) {
+#ifdef H3CSPEED_CUDA
+    h3_gpu_tensor *tensors[12];
+    const char *names[12];
+    size_t count = convrot_prefetch_set(
+        dit, block, norm1_already_consumed, tensors, names);
+    (void)names;
+    for (size_t index = 0; index < count; index++)
+        h3cspeed_cuda_cancel_prefetch_weight(dit->gpu, tensors[index]);
+#else
+    (void)dit;
+    (void)block;
+    (void)norm1_already_consumed;
+#endif
+}
+
+static int reserve_convrot_block(h3_dit *dit, unsigned block,
+                                 int norm1_already_consumed,
+                                 char *error, size_t error_size) {
+#ifndef H3CSPEED_CUDA
+    (void)dit;
+    (void)block;
+    (void)norm1_already_consumed;
+    (void)error;
+    (void)error_size;
+    return 1;
+#else
+    if (!dit_prefetch_requested() || !dit->checkpoint_convrot_int8 ||
+        dit->ssd_streaming || block >= H3_DIT_BLOCKS) return 1;
+
+    h3_gpu_tensor *tensors[12];
+    const char *names[12];
+    size_t count = convrot_prefetch_set(
+        dit, block, norm1_already_consumed, tensors, names);
+
+    for (size_t index = 0; index < count; index++) {
+        if (!tensors[index] ||
+            !h3cspeed_cuda_reserve_prefetch_weight(dit->gpu,
+                                                   tensors[index])) {
+            for (size_t reserved = 0; reserved < index; reserved++)
+                h3cspeed_cuda_cancel_prefetch_weight(
+                    dit->gpu, tensors[reserved]);
+            fail(error, error_size,
+                 "cannot reserve DiT block %u %s prefetch: %s",
+                 block, names[index], h3_gpu_error(dit->gpu));
+            return 0;
+        }
+    }
+    return 1;
+#endif
+}
+
+static int upload_convrot_block(h3_dit *dit, unsigned block,
+                                int norm1_already_consumed,
+                                char *error, size_t error_size) {
+#ifndef H3CSPEED_CUDA
+    (void)dit;
+    (void)block;
+    (void)norm1_already_consumed;
+    (void)error;
+    (void)error_size;
+    return 1;
+#else
+    if (!dit_prefetch_requested() || !dit->checkpoint_convrot_int8 ||
+        dit->ssd_streaming || block >= H3_DIT_BLOCKS) return 1;
+    h3_gpu_tensor *tensors[12];
+    const char *names[12];
+    size_t count = convrot_prefetch_set(
+        dit, block, norm1_already_consumed, tensors, names);
+    for (size_t index = 0; index < count; index++) {
+        if (!h3cspeed_cuda_prefetch_weight(dit->gpu, tensors[index])) {
+            cancel_convrot_prefetch(
+                dit, block, norm1_already_consumed);
+            fail(error, error_size,
+                 "cannot upload DiT block %u %s prefetch: %s",
+                 block, names[index], h3_gpu_error(dit->gpu));
+            return 0;
+        }
+    }
+    if (getenv("H3_PROFILE"))
+        fprintf(stderr, "h3: prefetched ConvRot DiT block %u (%zu weights)\n",
+                block, count);
+    return 1;
+#endif
+}
+
+static int prefetch_convrot_block(h3_dit *dit, unsigned block,
+                                  int norm1_already_consumed,
+                                  char *error, size_t error_size) {
+#ifndef H3CSPEED_CUDA
+    (void)dit;
+    (void)block;
+    (void)norm1_already_consumed;
+    (void)error;
+    (void)error_size;
+    return 1;
+#else
+    if (!dit_prefetch_requested() || !dit->checkpoint_convrot_int8 ||
+        dit->ssd_streaming || block >= H3_DIT_BLOCKS) return 1;
+    h3_gpu_tensor *tensors[12];
+    const char *names[12];
+    size_t count = convrot_prefetch_set(
+        dit, block, norm1_already_consumed, tensors, names);
+    for (size_t index = 0; index < count; index++) {
+        if (!tensors[index] ||
+            !h3cspeed_cuda_prime_prefetch_weight(dit->gpu,
+                                                 tensors[index])) {
+            cancel_convrot_prefetch(dit, block, norm1_already_consumed);
+            fail(error, error_size,
+                 "cannot prime DiT block %u %s prefetch: %s",
+                 block, names[index], h3_gpu_error(dit->gpu));
+            return 0;
+        }
+    }
+    return 1;
+#endif
+}
+
+static int fence_prefetch_failure(h3_dit *dit, char *error,
+                                  size_t error_size) {
+    char prefetch_error[512];
+    snprintf(prefetch_error, sizeof(prefetch_error), "%s",
+             error && error_size ? error : "DiT prefetch failed");
+    int fence_ok = h3_gpu_submit(dit->gpu);
+    if (!fence_ok)
+        fail(error, error_size, "%s; fence failed: %s",
+             prefetch_error, h3_gpu_error(dit->gpu));
+    else
+        fail(error, error_size, "%s", prefetch_error);
+    return 0;
+}
+
 static void configure_gate_ranked_blocks(h3_dit *dit) {
     const char *policy = getenv("H3_DIT_LAYER_POLICY");
     if ((policy && !strcmp(policy, "uniform")) ||
@@ -2222,6 +2395,14 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
         (unsigned)step < dit->token_reduction_early_steps ?
             dit->token_reduction_early_end : dit->token_reduction_end;
     uint32_t hidden_elements = dit->sequence * HIDDEN;
+    if (evaluate_core && dit_prefetch_requested() &&
+        dit->checkpoint_convrot_int8 && !dit->ssd_streaming) {
+        unsigned first = first_active_block(dit);
+        if (first < H3_DIT_BLOCKS &&
+            !prefetch_convrot_block(
+                dit, first, 0, error, error_size))
+            return fence_prefetch_failure(dit, error, error_size);
+    }
     if (evaluate_core && dit->core_reuse_interval > 1)
         OP(h3_gpu_copy_bf16(dit->gpu, dit->core_input, 0, dit->hidden, 0,
                             hidden_elements), "save DiT core input");
@@ -2273,6 +2454,8 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
             h3_dit_stream_job stream_job;
             pthread_t stream_thread;
             int stream_started = 0;
+            unsigned prefetch_future = H3_DIT_BLOCKS;
+            int future_norm1_consumed = 0;
             if (dit->ssd_streaming) {
                 if (dit->stream_ready_layer != block ||
                     dit->stream_ready_slot > 1) {
@@ -2308,6 +2491,15 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
                     return 0;
                 }
                 stream_started = 1;
+            } else {
+                prefetch_future = next_active_block(dit, block);
+                future_norm1_consumed = fuse_next_attention &&
+                    prefetch_future == next_block;
+                if (prefetch_future < H3_DIT_BLOCKS &&
+                    !reserve_convrot_block(
+                        dit, prefetch_future, future_norm1_consumed,
+                        error, error_size))
+                    return fence_prefetch_failure(dit, error, error_size);
             }
             int block_ok = run_block(
                 dit, block, step, weight, fused_token_adaln,
@@ -2318,8 +2510,21 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
                 error, error_size);
             if (!block_ok) {
                 if (stream_started) (void)pthread_join(stream_thread, NULL);
+                if (prefetch_future < H3_DIT_BLOCKS) {
+                    cancel_convrot_prefetch(
+                        dit, prefetch_future, future_norm1_consumed);
+                    if (dit_prefetch_requested() &&
+                        dit->checkpoint_convrot_int8)
+                        return fence_prefetch_failure(
+                            dit, error, error_size);
+                }
                 return 0;
             }
+            if (prefetch_future < H3_DIT_BLOCKS &&
+                !upload_convrot_block(
+                    dit, prefetch_future, future_norm1_consumed,
+                    error, error_size))
+                return fence_prefetch_failure(dit, error, error_size);
             completed_blocks++;
             if (command_blocks &&
                 completed_blocks < dit->active_block_count &&

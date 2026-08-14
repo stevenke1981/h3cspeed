@@ -43,7 +43,7 @@ ALLOWED_ENVIRONMENT = {
     "H3_PROFILE_JSON_DIR", "PYTHONIOENCODING", "PYTHONUTF8",
     "H3CSPEED_PERF002_ATTENTION_TRACE", "H3CSPEED_PERF002_SCHEDULER_TRACE",
     "H3CSPEED_TEXT_EMBEDDING", "H3CSPEED_TEXT_ENCODER_SHA256", "H3_FFMPEG",
-    "H3_VAE_LAYER_MAJOR",
+    "H3_CUDA_DIT_PREFETCH", "H3_VAE_LAYER_MAJOR",
 }
 BASE_ENVIRONMENT = {
     "APPDATA", "COMSPEC", "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA",
@@ -565,6 +565,14 @@ def _validate_h3_command(config: dict[str, Any], manifest: dict[str, Any],
         raise ContractError("H3_VAE_LAYER_MAJOR must be absent or exactly 1")
     if layer_major == "1" and environment.get("H3_PROFILE") != "1":
         raise ContractError("layer-major smoke evidence requires H3_PROFILE=1")
+    dit_prefetch = environment.get("H3_CUDA_DIT_PREFETCH")
+    if dit_prefetch not in (None, "1"):
+        raise ContractError("H3_CUDA_DIT_PREFETCH must be absent or exactly 1")
+    if dit_prefetch == "1" and environment.get("H3_PROFILE") != "1":
+        raise ContractError("DiT prefetch smoke evidence requires H3_PROFILE=1")
+    if dit_prefetch == "1" and "--ssd-streaming" in argv:
+        raise ContractError(
+            "DiT prefetch smoke evidence requires non-SSD ConvRot execution")
     engine_bindings = _mapping(
         _mapping(_mapping(config.get("bindings"), "bindings").get("engines"),
                  "bindings.engines").get("h3cspeed"),
@@ -604,8 +612,9 @@ def _validate_command(config: dict[str, Any], manifest: dict[str, Any],
     if config.get("schema_version") != SCHEMA_VERSION or config.get("engine") != engine:
         raise ContractError("private command config does not match this engine")
     requested_environment = _mapping(config.get("environment"), "environment")
-    if engine != "h3cspeed" and "H3_VAE_LAYER_MAJOR" in requested_environment:
-        raise ContractError("H3_VAE_LAYER_MAJOR is valid only for h3cspeed")
+    h3_only_environment = {"H3_CUDA_DIT_PREFETCH", "H3_VAE_LAYER_MAJOR"}
+    if engine != "h3cspeed" and h3_only_environment & set(requested_environment):
+        raise ContractError("H3 CUDA optimization flags are valid only for h3cspeed")
     argv = config.get("argv")
     if (not isinstance(argv, list) or not argv or
             not all(isinstance(item, str) and item and "\x00" not in item for item in argv)):

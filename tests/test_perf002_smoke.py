@@ -413,6 +413,10 @@ class Perf002SmokeTests(unittest.TestCase):
             bad_environment["environment"]["H3_VAE_LAYER_MAJOR"] = "1"
             with self.assertRaisesRegex(smoke.ContractError, "only for h3cspeed"):
                 smoke._validate_command(bad_environment, manifest, "comfyui")
+            bad_environment = copy.deepcopy(config)
+            bad_environment["environment"]["H3_CUDA_DIT_PREFETCH"] = "1"
+            with self.assertRaisesRegex(smoke.ContractError, "only for h3cspeed"):
+                smoke._validate_command(bad_environment, manifest, "comfyui")
             result_path = smoke.run_smoke(
                 manifest_path, config_path, evidence_dir,
                 shutil.which("ffmpeg") or "ffmpeg",
@@ -474,10 +478,11 @@ class Perf002SmokeTests(unittest.TestCase):
                          config["reference_png"], "--width", "864", "--height", "480",
                          "--frames", "22", "--steps", "2", "--layers", "50",
                          "--reuse", "1", "--core-reuse", "1", "--seed", "42",
-                         "--ssd-streaming", "-o", str(media)],
+                         "-o", str(media)],
                 "environment": {
                     "PYTHONUTF8": "1",
                     "H3_CUDA_ATTENTION": "sage",
+                    "H3_CUDA_DIT_PREFETCH": "1",
                     "H3_CUDA_TF32": "0",
                     "H3_PROFILE": "1",
                     "H3_VAE_LAYER_MAJOR": "1",
@@ -574,6 +579,11 @@ class Perf002SmokeTests(unittest.TestCase):
                 {"H3_CUDA_TF32": "1"}), "TF32=0")
             rejected(lambda bad: bad["environment"].update(
                 {"H3_VAE_LAYER_MAJOR": "0"}), "absent or exactly 1")
+            rejected(lambda bad: bad["environment"].update(
+                {"H3_CUDA_DIT_PREFETCH": "0"}), "absent or exactly 1")
+            rejected(lambda bad: bad["argv"].insert(
+                bad["argv"].index("-o"), "--ssd-streaming"),
+                "requires non-SSD ConvRot")
             rejected(lambda bad: bad["environment"].pop("H3_PROFILE"),
                      "requires H3_PROFILE=1")
             rejected(lambda bad: bad["environment"].update(

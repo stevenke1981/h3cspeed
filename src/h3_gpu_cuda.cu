@@ -247,6 +247,7 @@ static int release_tensor_device_locked(h3_gpu *gpu, h3_gpu_tensor *tensor,
      * boundary. */
     if (!h3cspeed_cuda_ok(gpu, cudaFree(pointer), "cudaFree tensor")) return 0;
     tensor->data = nullptr;
+    tensor->prefetch_reserved = 0;
     pthread_mutex_lock(&tensor->lock);
     tensor->ready_valid = 0;
     tensor->last_use_valid = 0;
@@ -276,6 +277,7 @@ static h3_gpu_tensor *eviction_candidate_locked(h3_gpu *gpu,
     for (h3_gpu_tensor *candidate = gpu->lru_head; candidate;
          candidate = candidate->lru_next) {
         if (candidate == protected_tensor || !candidate->data ||
+            candidate->prefetch_reserved ||
             candidate->pin_epoch == gpu->operation_epoch)
             continue;
         return candidate;
@@ -841,7 +843,10 @@ int h3cspeed_tensor_prepare(h3_gpu *gpu, h3_gpu_tensor *tensor) {
     } else if (tensor->offloadable) {
         lru_append_locked(gpu, tensor);
     }
-    if (tensor->offloadable) tensor->pin_epoch = gpu->operation_epoch;
+    if (tensor->offloadable) {
+        tensor->prefetch_reserved = 0;
+        tensor->pin_epoch = gpu->operation_epoch;
+    }
     pthread_mutex_unlock(&gpu->offload_lock);
 
     pthread_mutex_lock(&tensor->lock);
@@ -886,6 +891,7 @@ extern "C" int h3cspeed_cuda_reserve_prefetch_weight(
         return 0;
     }
     if (tensor->data) {
+        tensor->prefetch_reserved = 1;
         lru_append_locked(gpu, tensor);
         pthread_mutex_unlock(&gpu->offload_lock);
         return 1;
@@ -901,6 +907,7 @@ extern "C" int h3cspeed_cuda_reserve_prefetch_weight(
     pthread_mutex_unlock(&tensor->lock);
     /* Do not set pin_epoch: the scheduler has not consumed this future
      * weight.  The later upload helper records the existing ready event. */
+    tensor->prefetch_reserved = 1;
     lru_append_locked(gpu, tensor);
     pthread_mutex_unlock(&gpu->offload_lock);
     return 1;
@@ -939,6 +946,7 @@ extern "C" int h3cspeed_cuda_prefetch_weight(h3_gpu *gpu,
     int ready_valid = tensor->ready_valid;
     pthread_mutex_unlock(&tensor->lock);
     if (tensor->data && ready_valid) {
+        tensor->prefetch_reserved = 1;
         lru_append_locked(gpu, tensor);
         pthread_mutex_unlock(&gpu->offload_lock);
         return 1;
@@ -972,11 +980,44 @@ extern "C" int h3cspeed_cuda_prefetch_weight(h3_gpu *gpu,
         pthread_mutex_unlock(&gpu->offload_lock);
         return 0;
     }
-    /* Deliberately do not set pin_epoch: this is one-ahead future work and
-     * remains reclaimable until the next operation actually consumes it. */
+    /* Deliberately do not set pin_epoch: this is one-ahead future work. The
+     * scheduler reservation protects it until consume or explicit cancel. */
+    tensor->prefetch_reserved = 1;
     lru_append_locked(gpu, tensor);
     pthread_mutex_unlock(&gpu->offload_lock);
     return 1;
+}
+
+extern "C" void h3cspeed_cuda_cancel_prefetch_weight(
+        h3_gpu *gpu, h3_gpu_tensor *tensor) {
+    if (!gpu || !tensor || tensor->gpu != gpu) return;
+    pthread_mutex_lock(&gpu->offload_lock);
+    tensor->prefetch_reserved = 0;
+    pthread_mutex_unlock(&gpu->offload_lock);
+}
+
+extern "C" int h3cspeed_cuda_prime_prefetch_weight(
+        h3_gpu *gpu, h3_gpu_tensor *tensor) {
+    if (!gpu || !tensor || tensor->gpu != gpu) {
+        if (gpu) h3cspeed_set_error(gpu, "DiT weight prefetch prime",
+                                    "invalid CUDA tensor");
+        return 0;
+    }
+    if (!dit_prefetch_requested() || !gpu->offload.enabled) return 1;
+
+    pthread_mutex_lock(&gpu->offload_lock);
+    pthread_mutex_lock(&tensor->lock);
+    int ready_valid = tensor->ready_valid;
+    pthread_mutex_unlock(&tensor->lock);
+    if (tensor->data && ready_valid &&
+        tensor->pin_epoch == gpu->operation_epoch) {
+        tensor->prefetch_reserved = 1;
+        pthread_mutex_unlock(&gpu->offload_lock);
+        return 1;
+    }
+    pthread_mutex_unlock(&gpu->offload_lock);
+    return h3cspeed_cuda_reserve_prefetch_weight(gpu, tensor) &&
+           h3cspeed_cuda_prefetch_weight(gpu, tensor);
 }
 
 void h3cspeed_operation_complete(h3_gpu *gpu) {
@@ -1865,14 +1906,33 @@ extern "C" int h3_gpu_submit(h3_gpu *gpu) {
         device_span = 1;
     struct timespec start, stop;
     clock_gettime(CLOCK_MONOTONIC, &start);
-    int ok = h3cspeed_cuda_ok(gpu, profiled_stream_synchronize(
-                                   gpu, gpu->compute_stream,
-                                   H3CSPEED_PROFILE_STREAM_COMPUTE),
-                               "cudaStreamSynchronize(compute)") &&
-             h3cspeed_cuda_ok(gpu, profiled_stream_synchronize(
-                                   gpu, gpu->upload_stream,
-                                   H3CSPEED_PROFILE_STREAM_UPLOAD),
-                               "cudaStreamSynchronize(upload)");
+    /* Always drain both streams.  In particular, a compute failure must not
+     * short-circuit the upload fence and leave prefetched storage in flight
+     * while the caller unwinds and frees the DiT. */
+    int compute_ok = h3cspeed_cuda_ok(
+        gpu, profiled_stream_synchronize(
+                 gpu, gpu->compute_stream, H3CSPEED_PROFILE_STREAM_COMPUTE),
+        "cudaStreamSynchronize(compute)");
+    char compute_error[512] = {0};
+    if (!compute_ok)
+        snprintf(compute_error, sizeof(compute_error), "%s",
+                 h3_gpu_error(gpu));
+    int upload_ok = h3cspeed_cuda_ok(
+        gpu, profiled_stream_synchronize(
+                 gpu, gpu->upload_stream, H3CSPEED_PROFILE_STREAM_UPLOAD),
+        "cudaStreamSynchronize(upload)");
+    if (!compute_ok) {
+        if (!upload_ok) {
+            char submit_error[512];
+            snprintf(submit_error, sizeof(submit_error),
+                     "compute drain failed (%s); upload drain failed (%s)",
+                     compute_error, h3_gpu_error(gpu));
+            h3cspeed_set_error(gpu, "CUDA submit", submit_error);
+        } else {
+            h3cspeed_set_error(gpu, compute_error, nullptr);
+        }
+    }
+    int ok = compute_ok && upload_ok;
     if (ok && gpu->offload.release_scratch_on_submit) {
         pthread_mutex_lock(&gpu->scratch_lock);
         pthread_mutex_lock(&gpu->offload_lock);

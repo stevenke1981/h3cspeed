@@ -265,12 +265,24 @@ int main(void) {
         CHECK(cudaEventDestroy(compute_start) == cudaSuccess);
         CHECK(cudaEventDestroy(compute_end) == cudaSuccess);
 
+        /* A future-block reservation is an atomic ownership boundary: the
+         * allocator may not evict an earlier member of the same batch. */
+        CHECK(h3cspeed_cuda_reserve_prefetch_weight(gpu, first) == 1);
+        CHECK(first->prefetch_reserved == 1);
+        CHECK(h3cspeed_cuda_reserve_prefetch_weight(gpu, second) == 1);
+        CHECK(second->prefetch_reserved == 1);
+        CHECK(h3cspeed_cuda_reserve_prefetch_weight(gpu, third) == 0);
+        CHECK(third->data == nullptr);
+
         /* Future tensors are deliberately not pinned by the helper.  A tiny
          * weight cache must therefore evict and rebuild the first source. */
+        h3cspeed_cuda_cancel_prefetch_weight(gpu, first);
         CHECK(h3cspeed_cuda_prefetch_weight(gpu, second) == 1);
         CHECK(h3_gpu_submit(gpu) == 1);
+        h3cspeed_cuda_cancel_prefetch_weight(gpu, second);
         CHECK(h3cspeed_cuda_prefetch_weight(gpu, third) == 1);
         CHECK(h3_gpu_submit(gpu) == 1);
+        h3cspeed_cuda_cancel_prefetch_weight(gpu, third);
         CHECK(first->data == nullptr);
         CHECK(h3cspeed_cuda_reserve_prefetch_weight(gpu, first) == 1);
         CHECK(first->data != nullptr);
@@ -317,6 +329,18 @@ int main(void) {
         CHECK(h3cspeed_tensor_prepare(pin_gpu, pinned) == 1);
         CHECK(pinned->pin_epoch == pin_gpu->operation_epoch);
         CHECK(h3cspeed_cuda_reserve_prefetch_weight(pin_gpu, pinned) == 0);
+        CHECK(h3cspeed_cuda_prime_prefetch_weight(pin_gpu, pinned) == 1);
+        CHECK(pinned->pin_epoch == pin_gpu->operation_epoch);
+        CHECK(pinned->prefetch_reserved == 1);
+        /* Sampler windows may reuse the command chain without submit.  Each
+         * completed kernel still advances the private operation epoch, so a
+         * weight consumed by the prior evaluation becomes a valid future
+         * reservation in the next evaluation. */
+        h3cspeed_operation_complete(pin_gpu);
+        CHECK(pinned->pin_epoch != pin_gpu->operation_epoch);
+        CHECK(h3cspeed_cuda_reserve_prefetch_weight(pin_gpu, pinned) == 1);
+        CHECK(pinned->prefetch_reserved == 1);
+        h3cspeed_cuda_cancel_prefetch_weight(pin_gpu, pinned);
         CHECK(h3_gpu_submit(pin_gpu) == 1);
         h3_gpu_tensor_free(pinned);
         h3_gpu_free(pin_gpu);

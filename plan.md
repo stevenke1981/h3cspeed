@@ -274,7 +274,7 @@ Deliverables:
 
 5. Add explicit next-block prefetch from the known 50-block schedule without
    marking all prefetched tensors as current-epoch pinned. Future reservations
-   remain bounded and reclaimable.
+   remain bounded, cancellable and scheduler-protected until consumption.
 6. Remove per-chunk `cudaStreamSynchronize(upload_stream)` only after each slot
    has a completion fence; a source/staging buffer cannot be overwritten while
    its DMA is pending.
@@ -480,7 +480,7 @@ traffic counters and media QA evidence.
 | PERF-003 | F32 hidden-pool state-size spike + tile/layer parity harness | PERF-001 | ownership/memory model + same-latent 22-frame proof |
 | PERF-004 | Layer-major F32 VAE execution via verified overlay | PERF-003 | 22f traffic/media parity PASS; 124f <40 GiB and >=3x VAE wall `NOT_RUN` |
 | PERF-005 | Double-buffered async refill primitives | PERF-001 | opt-in two-slot/file-backed stress + strict H2D/compute timeline + sanitizer PASS; generated INT8 and 22f wall gates pending |
-| PERF-006 | DiT next-block prefetch schedule | PERF-005 | private reserve/upload primitive + focused synthetic overlap/eviction proof implemented; released schedule integration and >=50% upload-wait reduction `NOT_RUN` |
+| PERF-006 | DiT next-block prefetch schedule | PERF-005 | private primitive + released ConvRot integration + real 22f media parity PASS; matched >=50% exclusive upload-wait reduction `NOT_RUN` |
 | PERF-007 | Phase cache lifecycle + 8GB cache sweep | PERF-004/006 | no stale phase entries, ten-run stability |
 | PERF-008 | Shape-specific kernel autotuning/fusion | PERF-004/006 | numeric/sanitizer/per-shape speed gate |
 | PERF-009 | Fixed arenas + CUDA Graph | PERF-007/008 | graph parity and dispatch reduction |
@@ -520,13 +520,18 @@ the active compute window, the full fixture hash stayed unchanged, parallel
 disabled/enabled CTest passed, and memcheck/racecheck were clean. This proves
 the primitive overlaps DMA with independent compute for the focused fixture,
 not a model speedup or a cross-clock CPU-read duration. The PERF-006
-reserve/upload primitive is now independently proven, but it is not called by
-the released DiT schedule. The immediate next change is a bounded one-ahead
-integration with explicit failure fencing, followed by a matched cold
-864x480/22-frame baseline/candidate pair with the same binary and profile
-schema. Require at least 50% lower exclusive DiT upload-wait and preserve
-numerical/media parity. Generated-INT8 cycling and pageable-allocation failure
-injection remain focused test debt. Only after
+reserve/upload primitive is now independently proven. The released non-SSD
+ConvRot INT8 schedule now reserves a protected one-ahead batch before current
+compute and uploads it afterward, leaves future weights unpinned until
+consumption, and always
+drains compute and upload streams on submit/failure. BF16 SSD streaming is
+unchanged and deferred. A direct real 864x480/22-frame candidate exercised all
+98 one-ahead transitions and produced a byte-identical oracle MP4, closing the
+released-route correctness and media-parity gate. The immediate next gate is a
+matched cold 864x480/22-frame baseline/candidate pair with the same binary and
+profile schema. Require at least 50% lower exclusive DiT upload-wait; the
+single candidate wall is not a speedup claim. Generated-INT8 cycling and
+pageable-allocation failure injection remain focused test debt. Only after
 these gates pass should the complete matched 864x480/124-frame/8-step matrix
 run with one cold plus three warm trials per engine, including the 124-frame
 <40 GiB and PERF-001 95% gates.

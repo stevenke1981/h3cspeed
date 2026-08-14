@@ -83,10 +83,16 @@ strict CUDA-event intersection, checks that the future tensor is not pinned by
 the current epoch, preserves the full source-file hash plus every staging-chunk
 boundary, and evicts/reloads file-backed canaries. With
 `H3_CUDA_DIT_PREFETCH=0`, both helpers are no-ops and the existing lazy upload
-path remains responsible for the same canary. These are focused synthetic
-primitive proofs only: the released DiT block schedule does not call the
-helpers. The 22-frame exclusive upload-wait gate, generated-INT8/pageable
-failure gates, and real model/media parity remain `NOT_RUN`.
+path remains responsible for the same canary. The released non-SSD ConvRot
+INT8 schedule now reserves the next block before current compute, uploads it
+after current compute is enqueued, skips a cross-block-fused `norm1`, and
+fences both CUDA streams before aborting any partial future-block prefetch.
+Reserved batch members cannot evict one another. A direct released-schedule
+864x480/22-frame/2-step ConvRot run completed all 98 one-ahead transitions and
+produced a byte-identical oracle MP4, so released-route correctness and media
+parity are established. The focused fixture remains the strict event/ownership
+proof. The matched cold 22-frame exclusive upload-wait gate and the
+generated-INT8/pageable failure gates remain `NOT_RUN`.
 
 ## Gate 3 — released operation fixtures
 

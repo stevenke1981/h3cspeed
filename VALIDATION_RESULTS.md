@@ -388,6 +388,53 @@ calling this an architecture-wide production release.
   and media parity, a newer NVIDIA architecture, and the 124-frame run remain
   `NOT_RUN` / `MANUAL_REQUIRED` as applicable.
 
+## PERF-006 released ConvRot schedule integration (2026-08-14)
+
+- The opt-in `H3_CUDA_DIT_PREFETCH=1` path is now called by the released
+  non-SSD ConvRot INT8 block loop. It primes the first active block, protects
+  every member of the next-active-block reservation before current compute,
+  then uploads that batch on the CUDA upload stream after current work is
+  enqueued. The batch remains unpinned until the real consumer waits on its
+  ready event. Cross-block-fused `norm1` is not uploaded a second time. BF16
+  SSD streaming remains byte-for-byte on its prior slot/thread schedule.
+- Any reserve/upload failure aborts instead of falling back to partially ready
+  data. The failure path submits/fences the current command chain first, and
+  `h3_gpu_submit` now attempts both compute- and upload-stream synchronization
+  even when the first synchronization fails.
+- Fresh upstream bootstrap/hash verification, API coverage 103/103, source
+  syntax, portable overlay CTest 18/18, native sm_86 build, native CTest 22
+  pass plus one explicit model-fixture skip, focused enabled/disabled CTest,
+  memcheck 0 errors, and racecheck 0 hazards/errors/warnings passed.
+- A direct released-schedule candidate completed on the RTX 3070 Ti with the
+  same FL2VA model, sidecar, first frame, prompt, seed 42, 864x480 geometry,
+  22 frames and 2 steps. The log contains exactly 98 successful one-ahead
+  markers (49 per denoise step), the DiT profile is complete with 454.118836 s
+  context wall, and the full process observed wall was 712.5 s. Scheduler and
+  raw-audio evidence passed; Sage recorded 102 hits and zero unexpected
+  fallbacks.
+- Reproduction metadata: Windows WDDM, RTX 3070 Ti (`sm_86`), driver 596.36,
+  CUDA toolkit 13.2.78, native binary SHA-256
+  `CF087AC518AAC8887E7456AFE690439ACFE34184985EEE7812B9B09AEA3357B4`,
+  and bound input/model manifest SHA-256
+  `49BB685DF675DCF265FE87C5B95FC6587C7A42E6737DAD427325BE8DE3CDF264`.
+  The direct command used the manifest model root, prompt, first frame and
+  sidecar with `--width 864 --height 480 --frames 22 --steps 2 --layers 50
+  --reuse 1 --core-reuse 1 --seed 42`, without `--ssd-streaming`. Relevant
+  environment was `H3_CUDA_DIT_PREFETCH=1`, `H3_CUDA_OFFLOAD=ram+file`,
+  `H3_CUDA_LOW_VRAM=1`, VRAM/weight-cache/pinned/staging budgets
+  `5888/1536/128/64 MiB`, Sage attention, TF32 off, layer-major VAE and
+  profiling on. `H3_CUDA_ASYNC_REFILL` was absent, so this run is correctness
+  evidence and not the final overlap-performance candidate.
+- The candidate MP4 is byte-identical to the prior h3cspeed bound-host oracle:
+  SHA-256 `54077780F5D45CFCD9D5B44B0FEA91CEA9C4FC15DCEECF31CD60D376C9795F5B`.
+  FFprobe confirmed H.264 864x480, 22 frames at 24 fps plus stereo AAC 32 kHz,
+  and separate full video/audio `ffmpeg -xerror` decodes passed. This proves
+  released-route correctness and media parity, not a speedup.
+- A matched same-binary cold baseline/candidate pair and exclusive DiT
+  upload-wait reduction remain `NOT_RUN`. Generated-INT8 repeated cycling,
+  pageable failure injection, a newer NVIDIA architecture, and the
+  124-frame/8-step matrix remain `NOT_RUN` / `MANUAL_REQUIRED`.
+
 ## PERF-002C h3 direct-binary binding preflight (2026-08-14)
 
 - The h3 adapter now fail-closes unless the direct binary consumes the bound

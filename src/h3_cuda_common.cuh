@@ -70,6 +70,10 @@ struct h3_gpu_tensor {
     uint32_t convrot_group_size;
     int in_lru;
     int in_host_lru;
+    /* One-ahead scheduler ownership. Reserved future weights are protected
+     * from LRU eviction until their real consumer prepares them or the
+     * scheduler explicitly cancels the batch. */
+    int prefetch_reserved;
     uint64_t pin_epoch;
     cudaEvent_t ready;
     int ready_valid;
