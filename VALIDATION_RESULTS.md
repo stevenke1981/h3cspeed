@@ -552,3 +552,33 @@ calling this an architecture-wide production release.
   `compatibility=compatible (mask 0x0000000000000000)` after inventorying the
   real 932-tensor FL2VA shard. No inference, weight mapping, or media render
   was started by this check.
+
+## PERF-007 480p digital-human talking benchmark (2026-08-15)
+
+- The tracked Codex-generated fixture is
+  `benchmarks/digital-human-480p/digital-human-864x480.png`, SHA-256
+  `192E1191D2F597819C0BAC96267E5827BE2005D4C4D94141FF59099ADBDF24AE`.
+  Both engines used the same prompt, FL2VA sidecar, seed 42, 864x480 output,
+  124 frames at 24 fps, two denoise steps, 50 layers, and Sage with TF32 off.
+- The real ComfyUI graph completed model generation in 333.50 seconds. Its
+  MP4 is 276,681 bytes, SHA-256
+  `2C88B11840B9E820C25081E0D42D4FCCC59E3AAC6CB3816B6F166C5B3A21AA0B`;
+  H.264/AAC, 864x480, 124 frames, 24 fps, full FFmpeg decode and non-silent
+  audio passed. Sage recorded 100 hits and zero fallback calls. Sampled
+  frames showed a stable presenter with changing mouth shapes.
+- Exact-native H3 at 864x480 was stopped after the 3,600-second bound-host
+  timeout during denoise step 2/2. No native-quality H3 media was published,
+  so this is `TIMEOUT`, not a speed result.
+- The opt-in one-ahead H3 candidate with a bounded future-weight reservation
+  completed a usable 576x320 internal render in 1,381.070846 seconds
+  (`core-reuse=4`; `core-reuse=1` was 1,391.846375 seconds). It preserved the
+  864x480 output container and produced MP4 SHA-256
+  `802FEB3DA6A14B66D9C2432DB098CB86055A05671BC65F991D5EF38E37D4E025`.
+  Codec, full decode and audio checks passed; visual QA found softer detail
+  and a mild forehead seam. It is about 4.14x slower than ComfyUI and is a
+  speed/quality candidate, not native-quality parity.
+- A 288x160 internal candidate completed in 366.712963 seconds but failed
+  visual QA because of facial deformation and horizontal seams. The exact
+  native H3/ComfyUI speed and quality parity gate therefore remains
+  `NOT_RUN`; further optimization must preserve the 576x320-or-native visual
+  quality gate.

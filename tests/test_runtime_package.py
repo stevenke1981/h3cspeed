@@ -29,6 +29,7 @@ class RuntimePackageTest(unittest.TestCase):
         self.assertIn("scripts/run_perf002_ab.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/run_perf002_smoke.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/perf002_comfy_trace.py", package.COMMON_SCRIPTS)
+        self.assertIn("scripts/run_perf007_h3.ps1", package.COMMON_SCRIPTS)
         self.assertIn("scripts/validate_perf002_manifest.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/validate_perf006_ab.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/h3_model_info.py", package.COMMON_SCRIPTS)

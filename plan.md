@@ -562,3 +562,22 @@ The matched 124-frame/8-step cold-plus-three-warm A/B and profiling-disabled
 overhead gate remain `NOT_RUN`. The candidate's PERF-001 critical-path
 accounting is `NOT_MET` at 86.145% (`coverage=false`), so none of these gates
 may be inferred from the isolated smoke or candidate media parity.
+
+## 12. PERF-007 480p digital-human benchmark observation
+
+The current user-facing comparison uses the Codex-generated 864x480 reference
+image, the fixed prompt fixture, native FL2VA I2V sidecars and 124 frames at
+24 fps (approximately 5.166667 seconds). ComfyUI completed the real graph in
+333.50 seconds of prompt execution and passed media/audio/full-decode QA. The
+exact-native h3cspeed run was stopped at a 3,600-second bound-host timeout in
+denoise step 2/2, so no native-quality H3 speed claim is made.
+
+An opt-in H3 candidate adds a bounded
+`H3_CUDA_DIT_PREFETCH_MAX_WEIGHTS` policy and an explicit lower internal render
+size while preserving the 864x480 output container. The 576x320 candidate
+completed in 1,381.070846 seconds with usable but softer sampled frames; the
+288x160 candidate completed in 366.712963 seconds but failed visual quality
+because of facial deformation and horizontal seams. These are capacity/speed
+observations, not native-quality parity. The next performance slice is a
+DiT-side optimization that preserves the 576x320-or-native quality gate; do
+not infer a native H3/ComfyUI match from the low-resolution candidate.

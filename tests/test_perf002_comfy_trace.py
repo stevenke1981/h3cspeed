@@ -41,6 +41,15 @@ class Perf002ComfyTraceTests(unittest.TestCase):
         self.assertEqual(workflow["8"]["inputs"]["noise_seed"], 42)
         self.assertNotIn("testsrc2", json.dumps(workflow))
 
+    def test_workflow_supports_h3_aligned_480p_five_second_contract(self) -> None:
+        producer = load_module()
+        workflow = producer._build_workflow(
+            "reference.png", "a presenter speaks", "model.safetensors",
+            "clip.safetensors", "video.safetensors", "audio.safetensors",
+            frames=124)
+        self.assertEqual(workflow["6"]["inputs"]["length"], 124)
+        self.assertEqual(workflow["12"]["inputs"]["fps"], 24.0)
+
     def test_publish_json_is_no_clobber(self) -> None:
         producer = load_module()
         with tempfile.TemporaryDirectory() as temporary:

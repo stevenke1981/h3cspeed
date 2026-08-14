@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run an isolated, real ComfyUI 22-frame H3 smoke and publish PERF-002 traces.
+"""Run an isolated, real ComfyUI H3 smoke and publish scheduler/Sage traces.
 
 The driver starts ComfyUI in-process on a private loopback port, points all
 mutable ComfyUI directories at a private runtime directory, and keeps the
@@ -10,8 +10,10 @@ The command manifest intentionally binds only an entry-point file set:
 ``main.py``, T8 sampling/nodes, Comfy attention and four model files. Runtime
 imports beyond that set are not a reproducible source/venv lock; the matched
 A/B stage must add the full closure before making performance claims.
-This driver intentionally does not claim the 124-frame benchmark or a quality
-result.
+The default remains the fast 22-frame PERF-002 contract.  The same isolated
+producer also accepts the H3-aligned 124-frame (about 5.17 second) contract so
+the user-visible talking-video benchmark can reuse the exact graph without
+weakening the 22-frame regression gate.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from typing import Any, Callable
 
 CONTRACT = {"width": 864, "height": 480, "frames": 22, "fps": 24,
             "steps": 2, "layers": 50, "seed": 42}
+SUPPORTED_FRAME_COUNTS = (22, 124)
 T8_NODE_DIRECTORY = "comfyui-minimax-h3-audio-T8"
 
 
@@ -251,8 +254,12 @@ def _validate_sigma_grid(values: list[float], label: str, steps: int) -> None:
 
 
 def _build_workflow(image_name: str, prompt: str, model: str, clip: str,
-                    video_vae: str, audio_vae: str) -> dict[str, dict[str, Any]]:
-    """Build the fixed first-frame FL2VA I2V 864x480/22f/2-step graph."""
+                    video_vae: str, audio_vae: str,
+                    frames: int = CONTRACT["frames"]
+                    ) -> dict[str, dict[str, Any]]:
+    """Build the first-frame FL2VA I2V graph for an H3-aligned frame count."""
+    if frames not in SUPPORTED_FRAME_COUNTS:
+        raise TraceError(f"unsupported H3 benchmark frame count: {frames}")
     return {
         "1": {"class_type": "UNETLoader", "inputs":
               {"unet_name": model, "weight_dtype": "default"}},
@@ -263,7 +270,7 @@ def _build_workflow(image_name: str, prompt: str, model: str, clip: str,
         "5": {"class_type": "LoadImage", "inputs": {"image": image_name}},
         "6": {"class_type": "MiniMaxH3AudioConditioningT8", "inputs": {
             "clip": ["2", 0], "video_vae": ["3", 0], "audio_vae": ["4", 0],
-            "prompt": prompt, "width": 864, "height": 480, "length": 22,
+            "prompt": prompt, "width": 864, "height": 480, "length": frames,
             "task_type": "I2VA", "audio_mode": "native",
             "audio_denoise_strength": 1.0, "add_source_as_reference": False,
             "prompt_primary_audio_ordinal": 0, "strict_prompt_tags": True,
@@ -576,10 +583,12 @@ def run(args: argparse.Namespace) -> None:
     media = _new_destination(Path(args.output_media), "output media")
     scheduler = _new_destination(Path(args.scheduler_trace), "scheduler trace")
     attention = _new_destination(Path(args.attention_trace), "attention trace")
-    if any(args_value != CONTRACT[name] for name, args_value in
-           (("width", args.width), ("height", args.height),
-            ("frames", args.frames), ("steps", args.steps))):
-        raise TraceError("Comfy producer requires the fixed 864x480/22f/2-step contract")
+    if (args.width != CONTRACT["width"] or args.height != CONTRACT["height"] or
+            args.frames not in SUPPORTED_FRAME_COUNTS or
+            args.steps != CONTRACT["steps"]):
+        raise TraceError(
+            "Comfy producer requires 864x480, 2 steps, and an H3-aligned "
+            "22-frame or 124-frame contract")
     runtime = _private_directory(Path(args.runtime_dir), "private runtime")
     for name in ("output", "input", "temp", "user"):
         child = runtime / name
@@ -615,7 +624,7 @@ def run(args: argparse.Namespace) -> None:
         history = _queue_and_wait(
             base, _build_workflow(image_destination.name, prompt, model_names["model"],
                                   model_names["clip"], model_names["video_vae"],
-                                  model_names["audio_vae"]), args.timeout,
+                                  model_names["audio_vae"], args.frames), args.timeout,
             str(uuid.uuid4()), state)
         source_media = _find_media(history, runtime / "output")
         if not (state["setup_success"] and state["sample_success"] and
@@ -626,9 +635,10 @@ def run(args: argparse.Namespace) -> None:
                 state["sage_attempts"] > 0 and state["all_bf16"] and
                 state["fallbacks"] == 0):
             raise TraceError("Comfy runtime completed without complete scheduler/Sage proof")
+        runtime_contract = {**CONTRACT, "frames": args.frames}
         scheduler_report = {"schema_version": 1, "engine": "comfyui",
             "sampler": "dual_clock_euler", "schedule": "native_flow",
-            "video_shift": 12.0, "audio_shift": 3.0, **CONTRACT,
+            "video_shift": 12.0, "audio_shift": 3.0, **runtime_contract,
             "sigma_video": state["sigma_video"], "sigma_audio": state["sigma_audio"],
             "raw_audio_protocol_verified": True}
         attention_report = {"schema_version": 1, "engine": "comfyui",
@@ -668,7 +678,7 @@ def run(args: argparse.Namespace) -> None:
                 except FileNotFoundError:
                     pass
         raise
-    print("PERF-002C ComfyUI real 22-frame smoke complete")
+    print(f"PERF-002C ComfyUI real {args.frames}-frame smoke complete")
 
 
 def main() -> int:

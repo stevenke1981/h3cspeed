@@ -1246,6 +1246,21 @@ static int dit_prefetch_requested(void) {
     return value && !strcmp(value, "1");
 }
 
+/* A full ConvRot block can exceed the available weight-cache headroom on an
+ * 8 GiB card once the current block, activations, and VAE buffers are live.
+ * Keep the one-ahead route useful in that regime by allowing the caller to
+ * bound the number of future tensors.  The default remains the historical
+ * full-block policy; the 480p/5-second runner opts into a smaller, explicit
+ * budget and records it in the private run metadata. */
+static size_t dit_prefetch_max_weights(void) {
+    const char *value = getenv("H3_CUDA_DIT_PREFETCH_MAX_WEIGHTS");
+    if (!value || !*value) return 12u;
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (!end || *end || parsed < 1ul || parsed > 12ul) return 12u;
+    return (size_t)parsed;
+}
+
 #ifdef H3CSPEED_CUDA
 static size_t convrot_prefetch_set(h3_dit *dit, unsigned block,
                                    int norm1_already_consumed,
@@ -1266,9 +1281,11 @@ static size_t convrot_prefetch_set(h3_dit *dit, unsigned block,
         "fc2_int8", "fc2_scales",
     };
     size_t first = norm1_already_consumed ? 1u : 0u;
+    size_t max_weights = dit_prefetch_max_weights();
     size_t count = 0;
     for (size_t index = first;
-         index < sizeof(all_tensors) / sizeof(*all_tensors); index++) {
+         index < sizeof(all_tensors) / sizeof(*all_tensors) &&
+         count < max_weights; index++) {
         tensors[count] = all_tensors[index];
         names[count] = all_names[index];
         count++;
