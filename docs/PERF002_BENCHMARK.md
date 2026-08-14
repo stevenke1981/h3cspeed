@@ -16,9 +16,12 @@ not establish a speed result.
 - `algorithm_parity`: both engines use `dual_clock_euler`, `native_flow`, video
   shift 12 and audio shift 3. Sigma arrays must agree within `1e-6` and raw
   audio update semantics require separate runtime evidence.
-- SageAttention is accepted only when the runtime trace records at least one
-  backend hit and zero fallbacks. A requested flag or dispatch aggregate is
-  not backend evidence.
+- SageAttention is accepted only when the runtime trace is scoped to
+  `dit_bf16`, records at least one real backend hit and reports zero
+`unexpected_fallbacks`. `expected_native_calls` records the explicit
+native/unset backend control run; a BF16 call that requested Sage but is
+ineligible is an unexpected fallback. F32 VAE calls are outside this scope. A
+requested flag or aggregate dispatch count is not backend evidence.
 - One cold and at least three warm trials per engine. Conditioning, model load,
   keyframe encode, DiT, both VAEs and mux timing stay separate.
 
@@ -90,7 +93,17 @@ The adapter rehashes all bound inputs before and after the child process,
 rejects output paths inside the three protected roots, runs without a shell,
 and requires the 864x480/22-frame/24 fps/2-step smoke media contract. It accepts
 the smoke only when scheduler evidence is `dual_clock_euler/native_flow` with
-12/3 shifts and the attention trace records real Sage hits with zero fallback.
+12/3 shifts and the `dit_bf16` attention trace records real Sage hits with zero
+unexpected fallback.
+
+The h3cspeed binary now contains an opt-in producer for these two runtime
+traces. Set both `H3CSPEED_PERF002_SCHEDULER_TRACE` and
+`H3CSPEED_PERF002_ATTENTION_TRACE` to new absolute files outside source/model
+trees. The producer serializes the actual serving sigma arrays and scoped CUDA
+dispatch counters after denoising, and publishes scheduler evidence only after
+all requested audio Euler updates execute; partial, concurrent and existing-target
+publishes fail closed. This instrumentation has portable contract coverage,
+but a real 22-frame engine run is still `NOT_RUN`.
 
 ```powershell
 python scripts/run_perf002_smoke.py `

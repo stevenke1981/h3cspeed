@@ -243,3 +243,18 @@ calling this an architecture-wide production release.
 - Real h3cspeed 22-frame/2-step smoke: NOT RUN.
 - Real ComfyUI 22-frame/2-step smoke: NOT RUN.
 - Matched A/B timing and quality conclusion: NOT RUN.
+
+## PERF-002C h3 runtime evidence producer (2026-08-14)
+
+- Private opt-in h3cspeed trace producer: PASS in Windows MSVC `/W4 /WX`
+  portable tests. It serializes the actual `h3_serving_schedule_build` arrays,
+  12/3 shifts, generation geometry and seed only after every requested audio
+  Euler step and the complete denoise succeed.
+- CUDA attention evidence now distinguishes real Sage hits in `dit_bf16`,
+  explicit native-control calls and unexpected Sage-ineligible BF16 fallbacks.
+  F32 VAE attention is outside this scope.
+- Trace publication rejects one-sided/relative/concurrent/existing targets,
+  uses exclusive temporary files and no-clobber publication, and aborts state
+  on generation cleanup. Overlay CTest passed 17/17; API remains 103/103.
+- Real h3cspeed and ComfyUI 22-frame/2-step runs remain `NOT RUN`; this producer
+  change does not establish matched throughput, quality parity or a speedup.

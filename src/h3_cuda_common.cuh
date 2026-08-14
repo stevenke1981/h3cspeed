@@ -302,5 +302,14 @@ int h3cspeed_sdpa(h3_gpu *gpu, h3_gpu_tensor *output,
                   uint32_t kv_heads, uint32_t head_dim, float scale,
                   int causal, int output_head_major, int input_head_major,
                   int scale_query_bf16);
+#ifdef __cplusplus
+extern "C" {
+#endif
+void h3cspeed_perf002_trace_note_bf16_attention(int sage_hit,
+                                                 int expected_native,
+                                                 int unexpected_fallback);
+#ifdef __cplusplus
+}
+#endif
 
 #endif

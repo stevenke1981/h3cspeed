@@ -24,7 +24,7 @@ UPSTREAM_REPO = "antirez/h3.c"
 UPSTREAM_COMMIT = "8974cc055ea9c02fcd14cc27dfda3e1027c05153"
 ARCHIVE_URL = f"https://github.com/{UPSTREAM_REPO}/archive/{UPSTREAM_COMMIT}.zip"
 ARCHIVE_SHA256 = "dc6d3cd25cb70d5c723292e60f3f3b9093688a731467008a691d9a7412d3e8f3"
-PREPARED_TREE_SHA256 = "753f86fd035721fdc6db1ff4a42bfd7aaf6478ff27c7d0d0abf651e458d57931"
+PREPARED_TREE_SHA256 = "4bfd9e7f29235c57aeb933a977ca7064c8ef18ef96cdc83e38435aa8046d2116"
 
 # Git blob SHA-1 values, not ordinary file hashes. They pin the exact interfaces
 # on which the CUDA overlay was developed.
@@ -58,7 +58,7 @@ EXPECTED_GIT_BLOBS = {
 # of the generated marker detects edited or stale prepared trees without a
 # network request on every configure.
 PREPARED_GIT_BLOBS: dict[str, str] = {
-    "h3.c": "587dece23c5a4325ab40f9ba202fc46ff3782aa6",
+    "h3.c": "f1da9b92465cf0bc8053b9aeae5d49f4d3c7a1a0",
     "h3.h": "29640b37abaa056341cf5e827ecc9df501ca7c5c",
     "h3_gpu.h": "7fb2871f0c7fca24c029fff80e1a135e06092a72",
     "h3_host.c": "6e875effe9dbe4294a3e35207806282decbad304",
@@ -69,7 +69,7 @@ PREPARED_GIT_BLOBS: dict[str, str] = {
     "h3_weights.c": "a7321078b58e86bd87ad1f55192d818d81499bad",
     "h3_text_encoder.c": "1089f0395f69b11f2327785de3c7aef291e85df7",
     "h3_dit_schedule.c": "bbffd91d5615deebcc093d1c97c3392a043e5e0b",
-    "h3_dit.c": "980348657be5471fdeb50fee8e361618a4c96e26",
+    "h3_dit.c": "7849747fa958b6a821aaf39da6554301407823b7",
     "h3_video_vae.c": "308c0d2df79dd9df07a19d5adcee494cf97d0064",
     "h3_video_encoder.c": "f60a96d58e04f277fb1479122f1e528727e8b1b1",
     "h3_audio_vae.c": "2eef6e2e3e85968f056c6d1da1691cdd036c23e5",
@@ -579,6 +579,133 @@ def patch_frame_anchor_allocation(root: Path) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def patch_perf002_trace(root: Path) -> None:
+    """Wire the private PERF-002 trace producer into the generated h3.c.
+
+    The producer itself lives in the tracked src/ tree.  Only the two call
+    sites belong in the prepared upstream source, so a fresh bootstrap cannot
+    silently lose the runtime evidence hooks.
+    """
+    path = root / "h3.c"
+    text = path.read_text(encoding="utf-8")
+    include_marker = '#include "h3_text_embedding_file.h"\n'
+    include = '#include "h3_perf002_trace.h"\n'
+    if include not in text:
+        if include_marker not in text:
+            raise RuntimeError("unable to locate h3.c trace include marker")
+        text = text.replace(include_marker, include_marker + include, 1)
+    locals_marker = "    int decoder_is_cached = 0;\n"
+    locals_patch = locals_marker + "    int perf002_trace = 0;\n"
+    if locals_patch not in text:
+        if locals_marker not in text:
+            raise RuntimeError("unable to locate h3.c trace local marker")
+        text = text.replace(locals_marker, locals_patch, 1)
+    legacy_schedule = """    int perf002_trace = h3cspeed_perf002_trace_begin(
+        params->width, params->height, temporal.frame_count,
+        params->dit_layers, params->steps, params->seed,
+        sigmas.video, sigmas.audio);
+    if (perf002_trace < 0) {
+        h3_set_error(ctx, "invalid PERF-002 trace configuration");
+        goto cleanup;
+    }
+"""
+    if legacy_schedule in text:
+        text = text.replace(legacy_schedule, "", 1)
+    schedule_marker = """    h3_sigma_schedule sigmas;
+    if (!h3_serving_schedule_build(params->steps, &sigmas)) {
+        h3_set_error(ctx, "cannot construct the requested sigma schedule");
+        goto cleanup;
+    }
+"""
+    schedule_patch = schedule_marker + """    perf002_trace = h3cspeed_perf002_trace_begin(
+        params->width, params->height, temporal.frame_count,
+        params->dit_layers, params->steps, params->seed,
+        sigmas.video, sigmas.audio);
+    if (perf002_trace < 0) {
+        h3_set_error(ctx, "invalid PERF-002 trace configuration");
+        goto cleanup;
+    }
+"""
+    if schedule_patch not in text:
+        if schedule_marker not in text:
+            raise RuntimeError("unable to locate h3.c scheduler call site")
+        text = text.replace(schedule_marker, schedule_patch, 1)
+    denoise_marker = """        goto cleanup;
+    }
+    if (!dit_is_cached) h3_dit_free(dit);
+"""
+    denoise_patch = """        goto cleanup;
+    }
+    if (perf002_trace && !h3cspeed_perf002_trace_finish(1)) {
+        h3_set_error(ctx, "cannot publish PERF-002 runtime traces");
+        goto cleanup;
+    }
+    perf002_trace = 0;
+    if (!dit_is_cached) h3_dit_free(dit);
+"""
+    if denoise_patch not in text:
+        if denoise_marker in text:
+            text = text.replace(denoise_marker, denoise_patch, 1)
+        else:
+            old_denoise_patch = """        goto cleanup;
+    }
+    if (perf002_trace && !h3cspeed_perf002_trace_finish(1)) {
+        h3_set_error(ctx, "cannot publish PERF-002 runtime traces");
+        goto cleanup;
+    }
+    if (!dit_is_cached) h3_dit_free(dit);
+"""
+            if old_denoise_patch not in text:
+                raise RuntimeError("unable to locate h3.c denoise completion")
+            text = text.replace(old_denoise_patch, denoise_patch, 1)
+    cleanup_marker = "cleanup:\n"
+    cleanup_patch = "cleanup:\n    if (perf002_trace > 0) h3cspeed_perf002_trace_abort();\n"
+    if cleanup_patch not in text:
+        if cleanup_marker not in text:
+            raise RuntimeError("unable to locate h3.c cleanup label")
+        text = text.replace(cleanup_marker, cleanup_patch, 1)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def patch_perf002_dit_trace(root: Path) -> None:
+    """Record each successfully executed audio Euler update."""
+    path = root / "h3_dit.c"
+    text = path.read_text(encoding="utf-8")
+    include_marker = '#include "h3_dit_schedule.h"\n'
+    include = '#include "h3_perf002_trace.h"\n'
+    if include not in text:
+        if include_marker not in text:
+            raise RuntimeError("unable to locate h3_dit.c trace include marker")
+        text = text.replace(include_marker, include_marker + include, 1)
+    gpu_marker = """                audio_ratio), error, error_size, "GPU audio Euler step");
+        if (ok && (evaluate || preview)) {
+"""
+    gpu_patch = """                audio_ratio), error, error_size, "GPU audio Euler step");
+        if (ok) h3cspeed_perf002_trace_note_audio_euler_step();
+        if (ok && (evaluate || preview)) {
+"""
+    if gpu_patch not in text:
+        if gpu_marker not in text:
+            raise RuntimeError("unable to locate GPU audio Euler trace marker")
+        text = text.replace(gpu_marker, gpu_patch, 1)
+    cpu_marker = """            if (!ok) fail(error, error_size,
+                          "Euler solver rejected step %d", step);
+        }
+        if (ok && preview &&
+"""
+    cpu_patch = """            if (!ok) fail(error, error_size,
+                          "Euler solver rejected step %d", step);
+        }
+        if (ok) h3cspeed_perf002_trace_note_audio_euler_step();
+        if (ok && preview &&
+"""
+    if cpu_patch not in text:
+        if cpu_marker not in text:
+            raise RuntimeError("unable to locate CPU audio Euler trace marker")
+        text = text.replace(cpu_marker, cpu_patch, 1)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def patch_c_linkage(path: Path, include_marker: str) -> None:
     text = path.read_text(encoding="utf-8")
     opening = '#ifdef __cplusplus\nextern "C" {\n#endif\n\n'
@@ -631,7 +758,9 @@ def patch_tree(root: Path) -> None:
     patch_text_embedding_i2v(root)
     patch_sidecar_keyframe_hash_guard(root)
     patch_frame_anchor_allocation(root)
+    patch_perf002_trace(root)
     patch_quantized_loader(root)
+    patch_perf002_dit_trace(root)
     patch_c_linkage(root / "h3_gpu.h", "#include <stdint.h>\n\n")
     patch_c_linkage(root / "h3_metal.h", '#include "h3.h"\n\n')
     marker = root / ".h3cspeed-pinned-revision"

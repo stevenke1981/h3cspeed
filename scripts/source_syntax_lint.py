@@ -415,6 +415,7 @@ def main() -> int:
                 for source in (
                     root / "src/h3_offload_policy.c",
                     root / "src/h3_profile.c",
+                    root / "src/h3_perf002_trace.c",
                     root / "src/h3_cuda_info_main.c",
                 ):
                     run([

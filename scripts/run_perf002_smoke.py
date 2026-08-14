@@ -39,6 +39,7 @@ ALLOWED_ENVIRONMENT = {
     "H3_CUDA_RAM_CACHE_MIB", "H3_CUDA_STAGING_MIB", "H3_CUDA_TF32",
     "H3_CUDA_VRAM_BUDGET_MIB", "H3_CUDA_WEIGHT_CACHE_MIB", "H3_PROFILE",
     "H3_PROFILE_JSON_DIR", "PYTHONIOENCODING", "PYTHONUTF8",
+    "H3CSPEED_PERF002_ATTENTION_TRACE", "H3CSPEED_PERF002_SCHEDULER_TRACE",
 }
 BASE_ENVIRONMENT = {
     "APPDATA", "COMSPEC", "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA",
@@ -443,18 +444,24 @@ def _scheduler_evidence(path: Path, engine: str) -> dict[str, Any]:
 def _attention_evidence(path: Path, engine: str) -> dict[str, Any]:
     report = _mapping(_load_json(path, "attention trace"), "attention trace")
     required = {"schema_version", "engine", "requested", "selected",
-                "backend_hits", "fallbacks"}
+                "scope", "backend_hits", "expected_native_calls",
+                "unexpected_fallbacks"}
     if set(report) != required or report.get("schema_version") != 1 or report.get("engine") != engine:
         raise ContractError("attention trace schema or engine is invalid")
     hits = report.get("backend_hits")
-    fallbacks = report.get("fallbacks")
-    if (report.get("requested"), report.get("selected")) != ("sage", "sage"):
+    expected_native = report.get("expected_native_calls")
+    fallbacks = report.get("unexpected_fallbacks")
+    if (report.get("requested"), report.get("selected"), report.get("scope")) != (
+            "sage", "sage", "dit_bf16"):
         raise ContractError("attention trace did not select Sage")
     if (isinstance(hits, bool) or not isinstance(hits, int) or hits <= 0 or
+            isinstance(expected_native, bool) or not isinstance(expected_native, int) or
+            expected_native < 0 or
             isinstance(fallbacks, bool) or not isinstance(fallbacks, int) or fallbacks != 0):
         raise ContractError("Sage smoke requires backend hits and zero fallbacks")
-    return {"requested": "sage", "selected": "sage", "backend_hits": hits,
-            "fallbacks": 0, "trace_sha256": sha256_file(path)}
+    return {"requested": "sage", "selected": "sage", "scope": "dit_bf16",
+            "backend_hits": hits, "expected_native_calls": expected_native,
+            "unexpected_fallbacks": 0, "trace_sha256": sha256_file(path)}
 
 
 def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,

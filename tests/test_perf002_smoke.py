@@ -60,7 +60,8 @@ with open(scheduler, 'w', encoding='utf-8') as f:
  'raw_audio_protocol_verified':True}, f)
 with open(attention, 'w', encoding='utf-8') as f:
  json.dump({'schema_version':1,'engine':engine,'requested':'sage',
- 'selected':'sage','backend_hits':4,'fallbacks':0}, f)
+ 'selected':'sage','scope':'dit_bf16','backend_hits':4,
+ 'expected_native_calls':2,'unexpected_fallbacks':0}, f)
 """, encoding="utf-8")
 
 
@@ -208,9 +209,16 @@ class Perf002SmokeTests(unittest.TestCase):
             path = Path(temporary) / "attention.json"
             path.write_text(json.dumps({
                 "schema_version": 1, "engine": "comfyui", "requested": "sage",
-                "selected": "sage", "backend_hits": 1, "fallbacks": 1,
+                "selected": "sage", "scope": "dit_bf16", "backend_hits": 1,
+                "expected_native_calls": 2, "unexpected_fallbacks": 1,
             }), encoding="utf-8")
             with self.assertRaisesRegex(smoke.ContractError, "zero fallbacks"):
+                smoke._attention_evidence(path, "comfyui")
+            value = json.loads(path.read_text(encoding="utf-8"))
+            value["unexpected_fallbacks"] = 0
+            value["scope"] = "whole_pipeline"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(smoke.ContractError, "did not select Sage"):
                 smoke._attention_evidence(path, "comfyui")
 
     def test_timeout_stops_the_isolated_process_group(self) -> None:

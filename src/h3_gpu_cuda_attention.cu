@@ -358,6 +358,9 @@ int h3cspeed_sdpa(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3cspeed_tensor_wait(gpu, query) || !h3cspeed_tensor_wait(gpu, key) ||
         !h3cspeed_tensor_wait(gpu, value)) return 0;
     const char *backend = getenv("H3_CUDA_ATTENTION");
+    int bf16_scope = query->dtype == H3_GPU_BF16 &&
+        key->dtype == H3_GPU_BF16 && value->dtype == H3_GPU_BF16 &&
+        output->dtype == H3_GPU_BF16;
     if (backend && *backend && strcmp(backend, "native") != 0) {
         if (strcmp(backend, "sage") != 0) {
             h3cspeed_set_error(gpu, "H3_CUDA_ATTENTION",
@@ -369,11 +372,21 @@ int h3cspeed_sdpa(h3_gpu *gpu, h3_gpu_tensor *output,
          * kernel; this is a GPU-to-GPU dispatch choice, never a CPU fallback. */
         if (h3cspeed_sage_eligible(
                 gpu, output, query, key, value, query_heads, kv_heads,
-                head_dim))
-            return h3cspeed_sage_sdpa(
+                head_dim)) {
+            int sage_ok = h3cspeed_sage_sdpa(
                 gpu, output, query, key, value, batch, sequence,
                 query_heads, kv_heads, head_dim, scale, causal,
                 output_head_major, input_head_major, scale_query_bf16);
+            if (sage_ok && bf16_scope)
+                h3cspeed_perf002_trace_note_bf16_attention(1, 0, 0);
+            return sage_ok;
+        }
+        if (bf16_scope)
+            h3cspeed_perf002_trace_note_bf16_attention(0, 0, 1);
+    } else if (bf16_scope) {
+        /* A trace-enabled native run records the deliberate native calls as
+         * expected-native, while F32 VAE attention never enters this branch. */
+        h3cspeed_perf002_trace_note_bf16_attention(0, 1, 0);
     }
     unsigned threads = 1;
     while (threads < head_dim) threads <<= 1;

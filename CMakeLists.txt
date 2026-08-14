@@ -30,12 +30,17 @@ set(H3CSPEED_ICU_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/icu" CACHE PATH
 
 if(H3CSPEED_OVERLAY_TESTS_ONLY)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    find_package(Threads REQUIRED)
     enable_testing()
     add_executable(test_resize tests/test_resize.c src/h3_resize_portable.c)
     add_executable(test_offload_policy tests/test_offload_policy.c
         src/h3_offload_policy.c)
     add_executable(test_profile_report tests/test_profile_report.c
         src/h3_profile.c)
+    add_executable(test_perf002_trace tests/test_perf002_trace.c
+        src/h3_perf002_trace.c)
+    target_link_libraries(test_perf002_trace PRIVATE Threads::Threads)
+    target_include_directories(test_perf002_trace PRIVATE src)
     target_include_directories(test_profile_report PRIVATE src)
     target_include_directories(test_offload_policy PRIVATE src)
     if(MSVC)
@@ -51,8 +56,15 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
             _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
         target_compile_options(test_profile_report PRIVATE
             /W4 /WX /permissive-)
+        target_compile_definitions(test_perf002_trace PRIVATE
+            _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+        target_compile_options(test_perf002_trace PRIVATE
+            /W4 /WX /permissive- /FI${CMAKE_CURRENT_SOURCE_DIR}/src/h3_msvc_compat.h)
     else()
         target_compile_options(test_profile_report PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow -Wconversion
+            -Wsign-conversion -Werror)
+        target_compile_options(test_perf002_trace PRIVATE
             -Wall -Wextra -Wpedantic -Wshadow -Wconversion
             -Wsign-conversion -Werror)
     endif()
@@ -70,6 +82,8 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_profile_report.py
                 $<TARGET_FILE:test_profile_report>)
+    add_test(NAME perf002_trace_producer
+        COMMAND test_perf002_trace $<TARGET_FILE_DIR:test_perf002_trace>)
     add_test(NAME perf002_manifest
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_perf002_manifest.py)
     add_test(NAME perf002_media_harness
@@ -191,6 +205,7 @@ add_library(h3cspeed_core STATIC
     src/h3_resize_portable.c
     src/h3_offload_policy.c
     src/h3_profile.c
+    src/h3_perf002_trace.c
     $<$<PLATFORM_ID:Windows>:src/h3_windows_posix.c>
     ${H3CSPEED_CUDA_SOURCES}
 )
