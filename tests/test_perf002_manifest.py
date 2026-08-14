@@ -56,7 +56,7 @@ def specification() -> dict:
                       "backend_hit_required": True, "fallback_allowed": False},
         "models": {"h3cspeed": ["fl2va", "qwen", "video_vae", "audio_vae"],
                    "comfyui": ["fl2va", "qwen", "video_vae", "audio_vae"]},
-        "conditioning": {"h3cspeed": ["token_ids", "token_tags", "qwen_hidden"],
+        "conditioning": {"h3cspeed": ["sidecar"],
                          "comfyui": ["token_ids", "token_tags", "qwen_hidden"]},
         "engines": {"h3cspeed": ["binary", "source", "runtime"],
                     "comfyui": ["source", "python_env"]},
@@ -168,6 +168,12 @@ class Perf002ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.ContractError, "lacks required"):
                 runner.create_input_manifest(
                     spec, binding_files(root, spec), reference, prompt)
+            bad_conditioning = specification()
+            bad_conditioning["conditioning"]["h3cspeed"] = ["token_ids"]
+            with self.assertRaisesRegex(runner.ContractError, "conditioning bindings"):
+                runner.create_input_manifest(
+                    bad_conditioning, binding_files(root, bad_conditioning),
+                    reference, prompt)
             bad = specification()
             bad["fixture"]["label"] = "E:/private/reference.png"
             with self.assertRaisesRegex(runner.ContractError, "portable non-sensitive"):

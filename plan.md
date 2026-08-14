@@ -508,8 +508,19 @@ evidence. The repo-owned Comfy producer now starts the bound ComfyUI checkout in
 an isolated in-process child, queues the fixed first-frame I2VA graph, captures
 the actual T8 sampler/raw-audio/Sage calls, and publishes only the real
 `SaveVideo` output; no synthetic media path is accepted. The adapter, synthetic
-child and h3 trace producer contract PASS, but
-both real engine runs and
+child and h3 trace producer contract PASS. The h3 direct-binary contract now
+requires a pre-generated v2 FL2VA sidecar and canonical first frame, binds
+`H3CSPEED_TEXT_EMBEDDING` to the manifest conditioning sidecar and
+`H3CSPEED_TEXT_ENCODER_SHA256` to the manifest Qwen hash, and rejects duplicate
+or downgraded geometry flags. It parses and binds the v2 first-frame sidecar,
+requires TF32 off and Sage selected, rejects extra positional arguments, and
+closes the native inventory over four exact weight paths plus the transformer,
+tokenizer and VAE configs. The h3 sidecar is the single immutable composite
+conditioning artifact, while ComfyUI retains separate token/tag/hidden
+bindings. Native decode/mux FFmpeg and QA FFmpeg/FFprobe are also hashed and
+path-bound. It checks every bound input before and after the child. A real
+sidecar-backed h3 run remains `NOT_RUN`; the contract and synthetic fake-h3
+E2E are portable evidence only. Both real engine runs and
 whole-process stage timers remain `NOT_RUN` until the driver is executed on the
 bound GPU. The matched
 864x480 124-frame 8-step cold plus three-warm A/B, PERF-001 95% critical-path

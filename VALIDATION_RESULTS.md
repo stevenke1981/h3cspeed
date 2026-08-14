@@ -278,3 +278,31 @@ calling this an architecture-wide production release.
   864x480/22-frame/2-step media, scheduler/Sage runtime traces, full source and
   Python-environment closure, native control, visual QA and matched A/B timing
   all remain `NOT RUN`.
+
+## PERF-002C h3 direct-binary binding preflight (2026-08-14)
+
+- The h3 adapter now fail-closes unless the direct binary consumes the bound
+  FL2VA model root, exact prompt bytes, immutable first frame, v2 conditioning
+  sidecar, Qwen SHA-256, output path and both runtime trace paths. It rejects
+  duplicate or unknown options, last-frame/Ref2VA input, internal render-size
+  overrides and any geometry other than 864x480, 22 frames and 2 steps for the
+  bounded smoke. It also requires Sage with TF32 disabled, rejects unbound
+  positional arguments, validates the sidecar's v2 metadata and closes the
+  native loader inventory over the exact four weights and four required
+  configs. The sidecar is the single h3 conditioning artifact; native
+  decode/mux FFmpeg and QA FFmpeg/FFprobe are separately path/hash-bound. The
+  bound synthetic executable E2E and mismatch cases passed.
+- `prepare_h3_quantized_model.py --validate-only` passed for four safetensors
+  payloads and 26 config/tokenizer files. A schema-2
+  `minimax-h3-comfy-fl2va-quantized-pack` root was prepared with hard links;
+  `h3cspeed --info` identified FL2VA INT8 ConvRot, Qwen NVFP4/AWQ, video VAE
+  and audio VAE from that root without loading the model for inference.
+- A native 864x480 Codex ImageGen fixture was generated and mechanically
+  normalized to exact RGB24 864x480. Its SHA-256 is
+  `210A7F41E2B0030388030AFF170296FE8BC9F5D464FD43F0BA8104404A0D66D4`;
+  it has full-width content rather than the former blurred side-fill layout.
+- The RTX 3070 Ti still had another user process holding about 3.3 GiB VRAM,
+  leaving less than the measured h3cspeed budget. No process was terminated
+  and no real inference was started. The real sidecar-backed h3 smoke remains
+  `NOT RUN`; an individual future `SMOKE_PASS` will still not be matched A/B or
+  a speed/quality result.

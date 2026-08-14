@@ -36,7 +36,10 @@ REQUIRED_ENGINE_LABELS = {
     "h3cspeed": {"binary", "source", "runtime"},
     "comfyui": {"source", "python_env"},
 }
-REQUIRED_CONDITIONING_LABELS = {"token_ids", "token_tags", "qwen_hidden"}
+REQUIRED_CONDITIONING_LABELS = {
+    "h3cspeed": {"sidecar"},
+    "comfyui": {"token_ids", "token_tags", "qwen_hidden"},
+}
 STAGES = (
     "conditioning", "model_load", "keyframe_encode", "dit", "video_vae",
     "audio_vae", "mux", "total",
@@ -319,9 +322,9 @@ def validate_input_manifest(value: Any) -> dict[str, Any]:
             raise ContractError(f"engines.{engine} lacks required runtime bindings")
         conditioning_hashes = _validate_hash_map(
             conditioning.get(engine), f"conditioning.{engine}")
-        if not REQUIRED_CONDITIONING_LABELS.issubset(conditioning_hashes):
+        if not REQUIRED_CONDITIONING_LABELS[engine].issubset(conditioning_hashes):
             raise ContractError(
-                f"conditioning.{engine} lacks token IDs/tags/Qwen hidden bindings")
+                f"conditioning.{engine} lacks required runtime conditioning bindings")
 
     hardware = _mapping(root.get("hardware"), "hardware")
     _exact_keys(hardware, {"gpu_uuid", "gpu_name", "sm", "vram_bytes",

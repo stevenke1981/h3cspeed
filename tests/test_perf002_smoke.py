@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -69,6 +71,84 @@ with open(attention, 'w', encoding='utf-8') as f:
 """, encoding="utf-8")
 
 
+def write_fake_h3_engine(path: Path) -> None:
+    path.write_text(
+        """import hashlib, json, os, pathlib, shutil, subprocess, sys
+def value(flag):
+    indexes = [i for i, item in enumerate(sys.argv) if item == flag]
+    if len(indexes) != 1: raise SystemExit('duplicate/missing ' + flag)
+    return sys.argv[indexes[0] + 1]
+model_root = pathlib.Path(value('-d'))
+prompt = value('-p')
+first = pathlib.Path(value('--first-frame'))
+media = value('-o')
+if prompt != 'private fox prompt': raise SystemExit('prompt mismatch')
+if not first.is_file() or not model_root.is_dir(): raise SystemExit('input missing')
+for relative in ('FL2VA/transformer/minimax_h3_fl2va_pruned_int8_convrot.safetensors',
+ 'FL2VA/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+ 'FL2VA/video_vae/source/minimax_h3_video_vae_fp16.safetensors',
+ 'FL2VA/audio_vae/minimax_h3_audio_vae_fp32.safetensors'):
+    if not (model_root / relative).is_file(): raise SystemExit('model missing ' + relative)
+sidecar = pathlib.Path(os.environ['H3CSPEED_TEXT_EMBEDDING'])
+if not sidecar.is_file(): raise SystemExit('sidecar missing')
+qwen = model_root / 'FL2VA/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'
+if hashlib.sha256(qwen.read_bytes()).hexdigest() != os.environ['H3CSPEED_TEXT_ENCODER_SHA256']:
+    raise SystemExit('qwen hash mismatch')
+ffmpeg = os.environ['H3_FFMPEG']
+command = [ffmpeg, '-v', 'error', '-y', '-f', 'lavfi', '-i',
+ 'testsrc2=size=864x480:rate=24', '-f', 'lavfi', '-i',
+ 'sine=frequency=440:sample_rate=32000', '-t', '0.925', '-frames:v', '22',
+ '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '32000',
+ '-ac', '2', '-movflags', '+faststart', media]
+if subprocess.run(command, check=False).returncode: raise SystemExit(1)
+with open(os.environ['H3CSPEED_PERF002_SCHEDULER_TRACE'], 'w', encoding='utf-8') as f:
+ json.dump({'schema_version':1,'engine':'h3cspeed','sampler':'dual_clock_euler',
+ 'schedule':'native_flow','video_shift':12.0,'audio_shift':3.0,
+ 'width':864,'height':480,'frames':22,'steps':2,'layers':50,'seed':42,
+ 'sigma_video':[1.0,0.5,0.0],'sigma_audio':[1.0,0.5,0.0],
+ 'raw_audio_protocol_verified':True}, f)
+with open(os.environ['H3CSPEED_PERF002_ATTENTION_TRACE'], 'w', encoding='utf-8') as f:
+ json.dump({'schema_version':1,'engine':'h3cspeed','requested':'sage',
+ 'selected':'sage','scope':'dit_bf16','backend_hits':4,
+ 'expected_native_calls':2,'unexpected_fallbacks':0}, f)
+""", encoding="utf-8")
+
+
+def write_fake_h3_launcher(path: Path, driver: Path) -> None:
+    if os.name == "nt":
+        path.write_text(
+            f'@echo off\r\n"{sys.executable}" "{driver}" %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        path.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{driver}" "$@"\n',
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+
+
+def write_h3_sidecar(path: Path, prompt: str, reference: Path, qwen: Path) -> None:
+    recipe = b"h3cspeed-conditioning-v2"
+    prompt_bytes = prompt.encode("utf-8")
+    token_count = 1
+    metadata = hashlib.sha256(reference.read_bytes()).digest()
+    reserved = bytearray(24)
+    reserved[:6] = bytes((1, 1, 1, 1, 0, 1))
+    struct.pack_into("<III", reserved, 8, 864, 480, len(metadata))
+    embedding = b"\0" * (token_count * 5120 * 2)
+    header = struct.pack(
+        "<8sIIQQQIIQQQ32s24s", b"H3CSEV01", 2, 128,
+        len(prompt_bytes), token_count, len(recipe), 5120, 1,
+        len(embedding), token_count, token_count * 4,
+        hashlib.sha256(qwen.read_bytes()).digest(), bytes(reserved),
+    )
+    path.write_bytes(
+        header + prompt_bytes + recipe + metadata +
+        struct.pack("<I", 1) + embedding + b"\0"
+    )
+
+
 def process_is_running(pid: int) -> bool:
     if os.name == "nt":
         result = subprocess.run(
@@ -82,7 +162,8 @@ def process_is_running(pid: int) -> bool:
     return True
 
 
-def create_manifest(root: Path, perf002, command_driver: Path) -> tuple[Path, dict]:
+def create_manifest(root: Path, perf002, command_driver: Path,
+                    h3_binary: Path | None = None) -> tuple[Path, dict]:
     reference = root / "reference.png"
     prompt = root / "prompt.txt"
     write_png(reference)
@@ -93,6 +174,10 @@ def create_manifest(root: Path, perf002, command_driver: Path) -> tuple[Path, di
         "models": ["fl2va", "qwen", "video_vae", "audio_vae"],
         "conditioning": ["token_ids", "token_tags", "qwen_hidden"],
         "engines": ["binary", "source", "runtime"],
+    }
+    conditioning_labels = {
+        "h3cspeed": ["sidecar"],
+        "comfyui": labels["conditioning"],
     }
     spec = {
         "track": "algorithm_parity",
@@ -107,9 +192,15 @@ def create_manifest(root: Path, perf002, command_driver: Path) -> tuple[Path, di
                       "sigma_tolerance": 1e-6},
         "attention": {"requested": "sage", "tf32": False,
                       "backend_hit_required": True, "fallback_allowed": False},
-        "models": {engine: labels["models"] for engine in perf002.ENGINES},
-        "conditioning": {engine: labels["conditioning"] for engine in perf002.ENGINES},
-        "engines": {"h3cspeed": labels["engines"],
+        "models": {
+            "h3cspeed": labels["models"] + [
+                "transformer_config", "tokenizer", "video_vae_config",
+                "audio_vae_config",
+            ],
+            "comfyui": labels["models"],
+        },
+        "conditioning": conditioning_labels,
+        "engines": {"h3cspeed": labels["engines"] + ["ffmpeg", "ffprobe"],
                     "comfyui": ["source", "python_env", "comfy_main",
                                  "t8_sampling", "t8_nodes", "comfy_attention",
                                  "model_file", "clip_file", "video_vae_file",
@@ -120,13 +211,36 @@ def create_manifest(root: Path, perf002, command_driver: Path) -> tuple[Path, di
         "trials": {"cold": 1, "warm": 3},
     }
     bindings: dict = {"models": {}, "conditioning": {}, "engines": {}}
+    h3_model_root = root / "h3-model-root"
+    h3_model_root.mkdir()
+    h3_paths = {
+        "fl2va": "FL2VA/transformer/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "qwen": "FL2VA/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "video_vae": "FL2VA/video_vae/source/minimax_h3_video_vae_fp16.safetensors",
+        "audio_vae": "FL2VA/audio_vae/minimax_h3_audio_vae_fp32.safetensors",
+        "transformer_config": "FL2VA/transformer/config.json",
+        "tokenizer": "FL2VA/tokenizer/tokenizer.json",
+        "video_vae_config": "FL2VA/video_vae/config.json",
+        "audio_vae_config": "FL2VA/audio_vae/config.json",
+    }
     for section in bindings:
         for engine, section_labels in spec[section].items():
             bindings[section][engine] = {}
             for label in section_labels:
                 path = root / f"{section}-{engine}-{label}.bin"
+                if section == "models" and engine == "h3cspeed":
+                    path = h3_model_root / h3_paths[label]
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                elif section == "conditioning" and engine == "h3cspeed" and label == "sidecar":
+                    path = root / "h3-conditioning.h3c"
                 if section == "engines" and engine == "h3cspeed" and label == "binary":
-                    path = Path(sys.executable)
+                    path = h3_binary or Path(sys.executable)
+                elif section == "engines" and engine == "h3cspeed" and label in {
+                        "ffmpeg", "ffprobe"}:
+                    resolved_tool = shutil.which(label)
+                    if resolved_tool is None:
+                        raise RuntimeError(f"{label} is required for the smoke fixture")
+                    path = Path(resolved_tool)
                 elif section == "engines" and engine == "comfyui" and label == "python_env":
                     path = Path(sys.executable)
                 elif section == "engines" and engine == "comfyui" and label == "source":
@@ -134,6 +248,11 @@ def create_manifest(root: Path, perf002, command_driver: Path) -> tuple[Path, di
                 else:
                     path.write_bytes(f"{section}:{engine}:{label}".encode())
                 bindings[section][engine][label] = str(path)
+    write_h3_sidecar(
+        Path(bindings["conditioning"]["h3cspeed"]["sidecar"]),
+        "private fox prompt", reference,
+        Path(bindings["models"]["h3cspeed"]["qwen"]),
+    )
     manifest = perf002.create_input_manifest(spec, bindings, reference, prompt)
     manifest_path = root / "input-manifest.json"
     perf002.publish_json(manifest_path, manifest)
@@ -145,8 +264,9 @@ def create_manifest(root: Path, perf002, command_driver: Path) -> tuple[Path, di
 class Perf002SmokeTests(unittest.TestCase):
     def test_runtime_directory_is_comfy_only(self) -> None:
         smoke = load_script("run_perf002_smoke")
+        self.assertIn("model_root", smoke._required_config_fields("h3cspeed"))
+        self.assertIn("command_inputs", smoke._required_config_fields("h3cspeed"))
         self.assertNotIn("runtime_dir", smoke._required_config_fields("h3cspeed"))
-        self.assertNotIn("command_inputs", smoke._required_config_fields("h3cspeed"))
         self.assertIn("runtime_dir", smoke._required_config_fields("comfyui"))
         self.assertIn("command_inputs", smoke._required_config_fields("comfyui"))
 
@@ -255,6 +375,113 @@ class Perf002SmokeTests(unittest.TestCase):
                     shutil.which("ffmpeg") or "ffmpeg",
                     shutil.which("ffprobe") or "ffprobe", 60)
             self.assertFalse(protected_runtime.exists())
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                         "ffmpeg and ffprobe are required")
+    def test_h3_direct_binary_smoke_binds_sidecar_and_model_root(self) -> None:
+        perf002 = load_script("run_perf002_ab")
+        smoke = load_script("run_perf002_smoke")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake = root / "fake_h3.py"
+            write_fake_h3_engine(fake)
+            launcher = root / ("fake_h3.cmd" if os.name == "nt" else "fake_h3")
+            write_fake_h3_launcher(launcher, fake)
+            manifest_path, config = create_manifest(
+                root, perf002, fake, h3_binary=launcher)
+            manifest, _ = smoke.load_input(manifest_path)
+            model_root = root / "h3-model-root"
+            media_dir = root / "h3-output"
+            evidence_dir = root / "h3-evidence"
+            media_dir.mkdir()
+            evidence_dir.mkdir()
+            source_root = root / "source-root"
+            comfy_root = root / "comfy-root"
+            source_root.mkdir()
+            comfy_root.mkdir()
+            media = media_dir / "smoke.mp4"
+            scheduler = media_dir / "scheduler.json"
+            attention = media_dir / "attention.json"
+            sidecar = config["bindings"]["conditioning"]["h3cspeed"]["sidecar"]
+            qwen_hash = manifest["models"]["h3cspeed"]["qwen"]
+            config.update({
+                "schema_version": 1, "engine": "h3cspeed",
+                "model_root": str(model_root),
+                "argv": [str(launcher), "-d", str(model_root),
+                         "-p", "private fox prompt", "--first-frame",
+                         config["reference_png"], "--width", "864", "--height", "480",
+                         "--frames", "22", "--steps", "2", "--layers", "50",
+                         "--reuse", "1", "--core-reuse", "1", "--seed", "42",
+                         "--ssd-streaming", "-o", str(media)],
+                "environment": {
+                    "PYTHONUTF8": "1",
+                    "H3_CUDA_ATTENTION": "sage",
+                    "H3_CUDA_TF32": "0",
+                    "H3_FFMPEG": config["bindings"]["engines"]["h3cspeed"]["ffmpeg"],
+                    "H3CSPEED_TEXT_EMBEDDING": sidecar,
+                    "H3CSPEED_TEXT_ENCODER_SHA256": qwen_hash,
+                    "H3CSPEED_PERF002_SCHEDULER_TRACE": str(scheduler),
+                    "H3CSPEED_PERF002_ATTENTION_TRACE": str(attention),
+                },
+                "output_media": str(media), "scheduler_trace": str(scheduler),
+                "attention_trace": str(attention),
+                "protected_roots": [str(source_root), str(comfy_root), str(model_root)],
+                "command_artifacts": {
+                    "executable": {"label": "binary", "argv_index": 0},
+                    "driver": {"label": "binary", "argv_index": 0},
+                },
+                "command_inputs": {
+                    key: {"section": section, "label": label}
+                    for key, (section, label) in smoke.H3_INPUT_BINDINGS.items()
+                },
+            })
+            config_path = root / "h3-command.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            result_path = smoke.run_smoke(
+                manifest_path, config_path, evidence_dir,
+                shutil.which("ffmpeg") or "ffmpeg",
+                shutil.which("ffprobe") or "ffprobe", 60)
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["status"], "SMOKE_PASS")
+            self.assertEqual(result["engine"], "h3cspeed")
+            self.assertEqual(result["matched_ab_status"], "NOT_RUN")
+
+            def rejected(mutation, message: str) -> None:
+                bad = copy.deepcopy(config)
+                mutation(bad)
+                with self.assertRaisesRegex(smoke.ContractError, message):
+                    smoke._validate_command(bad, manifest, "h3cspeed")
+
+            rejected(lambda bad: bad["environment"].update(
+                {"H3CSPEED_TEXT_EMBEDDING": str(root / "other.h3c")}),
+                "manifest sidecar")
+            rejected(lambda bad: bad["environment"].update(
+                {"H3CSPEED_TEXT_ENCODER_SHA256": "0" * 64}), "Qwen hash")
+            rejected(lambda bad: bad["bindings"]["models"]["h3cspeed"].update(
+                {"qwen": config["bindings"]["models"]["comfyui"]["qwen"]}),
+                "native loader path")
+            rejected(lambda bad: bad["argv"].__setitem__(
+                bad["argv"].index("-p") + 1, "wrong prompt"), "prompt file")
+            rejected(lambda bad: bad["argv"].__setitem__(
+                bad["argv"].index("--width") + 1, "640"), "--width")
+            alternate = root / "alternate.png"
+            write_png(alternate)
+            rejected(lambda bad: bad["argv"].__setitem__(
+                bad["argv"].index("--first-frame") + 1, str(alternate)),
+                "manifest reference")
+            rejected(lambda bad: bad["environment"].update(
+                {"H3_CUDA_TF32": "1"}), "TF32=0")
+            rejected(lambda bad: bad["environment"].update(
+                {"H3_FFMPEG": str(launcher)}), "manifest-bound ffmpeg")
+            rejected(lambda bad: bad["argv"].insert(1, str(fake)),
+                     "unbound positional")
+            extra = model_root / "FL2VA/transformer/extra.safetensors"
+            extra.write_bytes(b"extra")
+            rejected(lambda bad: None, "inventory is not exact")
+            extra.unlink()
+            rejected(lambda bad: Path(
+                bad["bindings"]["conditioning"]["h3cspeed"]["sidecar"]
+            ).write_bytes(b"not-a-v2-sidecar"), "sidecar")
 
     def test_attention_fallback_is_rejected(self) -> None:
         smoke = load_script("run_perf002_smoke")

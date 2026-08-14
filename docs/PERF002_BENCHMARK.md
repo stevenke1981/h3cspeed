@@ -38,9 +38,10 @@ Prepare three private files outside the source, ComfyUI and model trees:
 1. `spec.json` contains labels and the fixed public contract, but no prompt,
    paths or secrets. `models.<engine>` and `engines.<engine>` are lists of
    portable labels.
-2. `bindings.json` maps model, conditioning (`token_ids`, `token_tags` and
-   `qwen_hidden`) and engine labels to actual regular files to hash. Paths are
-   consumed locally and never copied into the manifest.
+2. `bindings.json` maps model, conditioning and engine labels to actual regular
+   files to hash. ComfyUI binds `token_ids`, `token_tags` and `qwen_hidden`;
+   h3cspeed binds the single v2 `sidecar` artifact that contains those three
+   payloads. Paths are consumed locally and never copied into the manifest.
 3. `prompt.txt` contains the private prompt. Only its SHA-256 is recorded.
 
 Then run:
@@ -107,11 +108,67 @@ all requested audio Euler updates execute; partial, concurrent and existing-targ
 publishes fail closed. This instrumentation has portable contract coverage,
 but a real 22-frame engine run is still `NOT_RUN`.
 
+### h3cspeed direct-binary command contract
+
+The h3cspeed smoke is deliberately a direct binary invocation: both
+`command_artifacts.executable` and `command_artifacts.driver` must be the
+manifest-bound `engines.h3cspeed.binary` at `argv[0]`. Its h3-only
+`command_inputs` object must contain exactly these bindings:
+
+```json
+{
+  "-d": {"section": "config", "label": "model_root"},
+  "-p": {"section": "config", "label": "prompt_file"},
+  "--first-frame": {"section": "fixture", "label": "reference_png"},
+  "-o": {"section": "config", "label": "output_media"},
+  "H3CSPEED_TEXT_EMBEDDING": {"section": "conditioning", "label": "sidecar"},
+  "H3CSPEED_TEXT_ENCODER_SHA256": {"section": "models", "label": "qwen"},
+  "H3_FFMPEG": {"section": "engines", "label": "ffmpeg"},
+  "H3CSPEED_PERF002_SCHEDULER_TRACE": {"section": "config", "label": "scheduler_trace"},
+  "H3CSPEED_PERF002_ATTENTION_TRACE": {"section": "config", "label": "attention_trace"}
+}
+```
+
+Before the adapter is invoked, run the existing ComfyUI helper
+`scripts/encode_h3_quantized_prompt.py` to create a v2 FL2VA sidecar and its
+canonical `.h3c.first.png`. Bind that sidecar as the additional
+`conditioning.h3cspeed.sidecar` file in `bindings.json`; the adapter checks its
+pre/post SHA-256 and requires `H3CSPEED_TEXT_EMBEDDING` to point to that exact
+file. It also requires `H3CSPEED_TEXT_ENCODER_SHA256` to equal the manifest's
+`models.h3cspeed.qwen` hash. The h3 model bindings must include `fl2va`,
+`qwen`, `video_vae`, `audio_vae`, `transformer_config`, `tokenizer`,
+`video_vae_config` and `audio_vae_config`. All eight files must resolve to the
+native loader's exact FL2VA component paths below `-d`; each weight directory
+must contain exactly the one bound safetensors payload, and an enabled Ref2VA
+index is rejected.
+
+The adapter requires each of `-d`, `-p`, `--first-frame`, `-o`, `--width`,
+`--height`, `--frames`, `--steps`, `--layers`, `--reuse`, `--core-reuse` and
+`--seed` exactly once with values `864`, `480`, `22`, `2`, `50`, `1`, `1` and
+`42` respectively. `-p` must equal the prompt file bytes, `--first-frame` must
+be the immutable manifest reference, and the trace environment paths must
+equal the configured trace files. `--last-frame`, render-size overrides and
+unknown/duplicate flags are rejected, so a render downgrade cannot silently
+pass as the smoke contract. Additional positional arguments are rejected,
+`H3_CUDA_ATTENTION` must be `sage`, and `H3_CUDA_TF32` must be exactly `0`.
+Before launch, the adapter parses the bound sidecar as v2 first-frame FL2VA and
+checks its 864x480 geometry, prompt, Qwen digest, canonical first-frame digest
+and payload lengths. The h3 engine bindings must also include absolute
+`ffmpeg` and `ffprobe` executables. `H3_FFMPEG` must point to the bound FFmpeg
+used by native first-frame decode/mux, and the adapter requires its own
+`--ffmpeg`/`--ffprobe` QA arguments to resolve to those same hashed tools.
+
+An individual h3 `SMOKE_PASS` proves only the isolated process, immutable
+bindings, 22-frame media QA and runtime traces. It keeps
+`matched_ab_status: NOT_RUN`; it is not a matched A/B, speed or quality result.
+
 ```powershell
 python scripts/run_perf002_smoke.py `
   --manifest E:\private\perf002\evidence\input-manifest.json `
   --command-config E:\private\perf002\h3cspeed-smoke.private.json `
-  --output-dir E:\private\perf002\h3cspeed-smoke
+  --output-dir E:\private\perf002\h3cspeed-smoke `
+  --ffmpeg C:\ffmpeg\bin\ffmpeg.exe `
+  --ffprobe C:\ffmpeg\bin\ffprobe.exe
 ```
 
 `SMOKE_PASS` is an individual process, media and trace result only. The result

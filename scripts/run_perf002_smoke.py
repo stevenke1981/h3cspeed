@@ -16,7 +16,9 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -40,6 +42,7 @@ ALLOWED_ENVIRONMENT = {
     "H3_CUDA_VRAM_BUDGET_MIB", "H3_CUDA_WEIGHT_CACHE_MIB", "H3_PROFILE",
     "H3_PROFILE_JSON_DIR", "PYTHONIOENCODING", "PYTHONUTF8",
     "H3CSPEED_PERF002_ATTENTION_TRACE", "H3CSPEED_PERF002_SCHEDULER_TRACE",
+    "H3CSPEED_TEXT_EMBEDDING", "H3CSPEED_TEXT_ENCODER_SHA256", "H3_FFMPEG",
 }
 BASE_ENVIRONMENT = {
     "APPDATA", "COMSPEC", "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA",
@@ -55,6 +58,36 @@ COMFY_INPUT_FLAGS = {
     "--video-vae-file": "video_vae_file",
     "--audio-vae-file": "audio_vae_file",
 }
+H3_INPUT_BINDINGS = {
+    "-d": ("config", "model_root"),
+    "-p": ("config", "prompt_file"),
+    "--first-frame": ("fixture", "reference_png"),
+    "-o": ("config", "output_media"),
+    "H3CSPEED_TEXT_EMBEDDING": ("conditioning", "sidecar"),
+    "H3CSPEED_TEXT_ENCODER_SHA256": ("models", "qwen"),
+    "H3_FFMPEG": ("engines", "ffmpeg"),
+    "H3CSPEED_PERF002_SCHEDULER_TRACE": ("config", "scheduler_trace"),
+    "H3CSPEED_PERF002_ATTENTION_TRACE": ("config", "attention_trace"),
+}
+H3_VALUE_FLAGS = {
+    "-d", "-p", "--first-frame", "-o", "--width", "--height", "--frames",
+    "--steps", "--layers", "--reuse", "--core-reuse", "--seed",
+}
+H3_SWITCH_FLAGS = {"--ssd-streaming"}
+H3_FORBIDDEN_FLAGS = {"--last-frame", "--render-width", "--render-height"}
+H3_MODEL_PATHS = {
+    "fl2va": Path("FL2VA/transformer/minimax_h3_fl2va_pruned_int8_convrot.safetensors"),
+    "qwen": Path("FL2VA/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"),
+    "video_vae": Path("FL2VA/video_vae/source/minimax_h3_video_vae_fp16.safetensors"),
+    "audio_vae": Path("FL2VA/audio_vae/minimax_h3_audio_vae_fp32.safetensors"),
+    "transformer_config": Path("FL2VA/transformer/config.json"),
+    "tokenizer": Path("FL2VA/tokenizer/tokenizer.json"),
+    "video_vae_config": Path("FL2VA/video_vae/config.json"),
+    "audio_vae_config": Path("FL2VA/audio_vae/config.json"),
+}
+H3_SIDECAR_HEADER = struct.Struct("<8sIIQQQIIQQQ32s24s")
+H3_SIDECAR_RECIPE = b"h3cspeed-conditioning-v2"
+H3_SIDECAR_MAX_BYTES = 64 * 1024 * 1024
 BASE_CONFIG_FIELDS = {
     "schema_version", "engine", "argv", "environment", "output_media",
     "scheduler_trace", "attention_trace", "protected_roots", "reference_png",
@@ -63,8 +96,9 @@ BASE_CONFIG_FIELDS = {
 
 
 def _required_config_fields(engine: str) -> set[str]:
-    return BASE_CONFIG_FIELDS | (
-        {"runtime_dir", "command_inputs"} if engine == "comfyui" else set())
+    if engine == "h3cspeed":
+        return BASE_CONFIG_FIELDS | {"model_root", "command_inputs"}
+    return BASE_CONFIG_FIELDS | {"runtime_dir", "command_inputs"}
 
 
 if os.name == "nt":
@@ -324,6 +358,240 @@ def _private_environment(overrides: Any) -> dict[str, str]:
     return environment
 
 
+def _single_h3_flag(argv: list[str], flag: str) -> tuple[int, str]:
+    indices = [index for index, value in enumerate(argv) if value == flag]
+    if len(indices) != 1:
+        raise ContractError(f"h3cspeed flag {flag} must occur exactly once")
+    index = indices[0]
+    if index + 1 >= len(argv) or not argv[index + 1]:
+        raise ContractError(f"h3cspeed flag {flag} must have one value")
+    return index, argv[index + 1]
+
+
+def _validate_h3_sidecar(path: Path, prompt: bytes, reference_sha256: str,
+                         qwen_sha256: str) -> None:
+    size = path.stat().st_size
+    if size < H3_SIDECAR_HEADER.size or size > H3_SIDECAR_MAX_BYTES:
+        raise ContractError("h3cspeed conditioning sidecar size is invalid")
+    payload = path.read_bytes()
+    if len(payload) != size:
+        raise ContractError("h3cspeed conditioning sidecar changed while reading")
+    try:
+        (magic, version, header_size, prompt_bytes, token_count, recipe_bytes,
+         width, flags, embedding_bytes, tag_bytes, token_id_bytes, model_sha,
+         reserved) = H3_SIDECAR_HEADER.unpack_from(payload)
+    except struct.error as error:
+        raise ContractError("h3cspeed conditioning sidecar header is invalid") from error
+    if (magic != b"H3CSEV01" or version != 2 or
+            header_size != H3_SIDECAR_HEADER.size or width != 5120 or flags != 1 or
+            token_count <= 0 or recipe_bytes != len(H3_SIDECAR_RECIPE) or
+            embedding_bytes != token_count * width * 2 or
+            tag_bytes != token_count or token_id_bytes != token_count * 4 or
+            model_sha.hex() != qwen_sha256):
+        raise ContractError("h3cspeed conditioning sidecar v2 contract is invalid")
+    mode, role, count, order, first_resize, last_resize = reserved[:6]
+    render_width, render_height, metadata_bytes = struct.unpack_from("<III", reserved, 8)
+    if (reserved[6:8] != b"\0\0" or reserved[20:24] != b"\0\0\0\0" or
+            (mode, role, count, order, first_resize, last_resize) != (1, 1, 1, 1, 0, 1) or
+            (render_width, render_height, metadata_bytes) != (864, 480, 32)):
+        raise ContractError("h3cspeed conditioning sidecar is not first-frame 864x480 FL2VA")
+    expected_size = (header_size + prompt_bytes + recipe_bytes + metadata_bytes +
+                     token_id_bytes + embedding_bytes + tag_bytes)
+    if expected_size != len(payload):
+        raise ContractError("h3cspeed conditioning sidecar payload length is invalid")
+    offset = header_size
+    sidecar_prompt = payload[offset:offset + prompt_bytes]
+    offset += prompt_bytes
+    recipe = payload[offset:offset + recipe_bytes]
+    offset += recipe_bytes
+    reference_hash = payload[offset:offset + metadata_bytes]
+    if (sidecar_prompt != prompt or recipe != H3_SIDECAR_RECIPE or
+            reference_hash.hex() != reference_sha256):
+        raise ContractError("h3cspeed sidecar prompt, recipe, or first-frame hash mismatches")
+
+
+def _validate_h3_command(config: dict[str, Any], manifest: dict[str, Any],
+                         argv: list[str]) -> None:
+    command_inputs = _mapping(config.get("command_inputs"), "command_inputs")
+    expected_inputs = {
+        key: {"section": section, "label": label}
+        for key, (section, label) in H3_INPUT_BINDINGS.items()
+    }
+    if command_inputs != expected_inputs:
+        raise ContractError("h3cspeed command_inputs do not match the direct-binary schema")
+
+    # Parse the public CLI grammar without allowing a hidden render downgrade,
+    # Ref2VA last frame, or duplicate/unknown option that could change the run.
+    consumed: set[int] = set()
+    for index, value in enumerate(argv[1:], start=1):
+        if index in consumed:
+            continue
+        if not value.startswith("-"):
+            raise ContractError("h3cspeed argv contains an unbound positional argument")
+        if value in H3_FORBIDDEN_FLAGS:
+            raise ContractError(f"h3cspeed flag {value} is forbidden for the smoke contract")
+        if value in H3_VALUE_FLAGS:
+            _, argument = _single_h3_flag(argv, value)
+            consumed.add(index)
+            consumed.add(index + 1)
+            if not argument:
+                raise ContractError(f"h3cspeed flag {value} must have one value")
+            continue
+        if value in H3_SWITCH_FLAGS:
+            indices = [item for item, candidate in enumerate(argv) if candidate == value]
+            if len(indices) != 1:
+                raise ContractError(f"h3cspeed flag {value} must occur exactly once")
+            consumed.add(index)
+            continue
+        raise ContractError(f"unknown h3cspeed option {value}")
+
+    required_values = {
+        "--width": "864", "--height": "480", "--frames": "22",
+        "--steps": "2", "--layers": "50", "--reuse": "1",
+        "--core-reuse": "1", "--seed": "42",
+    }
+    for flag, expected in required_values.items():
+        _, actual = _single_h3_flag(argv, flag)
+        if actual != expected:
+            raise ContractError(f"h3cspeed flag {flag} must be {expected}")
+    _, model_root_value = _single_h3_flag(argv, "-d")
+    _, prompt_value = _single_h3_flag(argv, "-p")
+    _, first_frame_value = _single_h3_flag(argv, "--first-frame")
+    _, output_value = _single_h3_flag(argv, "-o")
+
+    model_root_config = Path(config.get("model_root", ""))
+    if not model_root_config.is_absolute():
+        raise ContractError("h3cspeed model_root must be absolute")
+    model_root = safe_existing_directory(model_root_config, "h3cspeed model root")
+    model_root_argument = safe_existing_directory(Path(model_root_value),
+                                                  "h3cspeed -d model root")
+    if model_root_argument != model_root:
+        raise ContractError("h3cspeed -d does not match model_root")
+
+    model_bindings = _mapping(
+        _mapping(_mapping(config.get("bindings"), "bindings").get("models"),
+                 "bindings.models").get("h3cspeed"),
+        "bindings.models.h3cspeed",
+    )
+    manifest_models = _mapping(manifest["models"].get("h3cspeed"),
+                               "manifest.models.h3cspeed")
+    resolved_models: dict[str, Path] = {}
+    for label, relative in H3_MODEL_PATHS.items():
+        if label not in model_bindings or label not in manifest_models:
+            raise ContractError(f"h3cspeed model binding lacks {label}")
+        model_file = safe_regular(Path(model_bindings[label]),
+                                  f"h3cspeed model {label}")
+        expected = (model_root / relative).resolve()
+        if model_file != expected:
+            raise ContractError(f"h3cspeed model {label} is not at its native loader path")
+        resolved_models[label] = model_file
+    for label in ("fl2va", "qwen", "video_vae", "audio_vae"):
+        component = resolved_models[label].parent
+        inventory = {
+            safe_regular(candidate, f"h3cspeed {label} inventory")
+            for candidate in component.glob("*.safetensors")
+        }
+        if inventory != {resolved_models[label]}:
+            raise ContractError(f"h3cspeed {label} safetensors inventory is not exact")
+    ref2va_index = model_root / "Ref2VA/transformer/model.safetensors.index.json"
+    if ref2va_index.exists() or ref2va_index.is_symlink():
+        raise ContractError("h3cspeed FL2VA smoke model root must not enable Ref2VA")
+
+    reference = Path(config.get("reference_png", ""))
+    prompt = Path(config.get("prompt_file", ""))
+    if not reference.is_absolute() or not prompt.is_absolute():
+        raise ContractError("h3cspeed reference_png and prompt_file must be absolute")
+    reference = safe_regular(reference, "reference PNG")
+    prompt = safe_regular(prompt, "prompt file")
+    first_frame = safe_regular(Path(first_frame_value), "h3cspeed first frame")
+    if first_frame != reference or sha256_file(first_frame) != manifest["fixture"]["sha256"]:
+        raise ContractError("h3cspeed --first-frame is not the manifest reference")
+    try:
+        prompt_bytes = prompt.read_bytes()
+        prompt_text = prompt_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError("h3cspeed prompt file must be UTF-8") from error
+    if prompt_value != prompt_text:
+        raise ContractError("h3cspeed -p must equal the prompt file bytes")
+
+    output = Path(config.get("output_media", ""))
+    if not output.is_absolute() or Path(os.path.abspath(output_value)) != Path(os.path.abspath(output)):
+        raise ContractError("h3cspeed -o does not match output_media")
+
+    environment = _mapping(config.get("environment"), "environment")
+    for key, config_key in (
+            ("H3CSPEED_PERF002_SCHEDULER_TRACE", "scheduler_trace"),
+            ("H3CSPEED_PERF002_ATTENTION_TRACE", "attention_trace")):
+        configured = Path(config.get(config_key, ""))
+        value = environment.get(key)
+        if (not configured.is_absolute() or not isinstance(value, str) or
+                not Path(value).is_absolute() or
+                Path(os.path.abspath(value)) != Path(os.path.abspath(configured))):
+            raise ContractError(f"{key} must equal the configured trace path")
+
+    conditioning = _mapping(
+        _mapping(config.get("bindings"), "bindings").get("conditioning"),
+        "bindings.conditioning",
+    )
+    h3_conditioning = _mapping(conditioning.get("h3cspeed"),
+                                "bindings.conditioning.h3cspeed")
+    manifest_conditioning = _mapping(manifest["conditioning"].get("h3cspeed"),
+                                     "manifest.conditioning.h3cspeed")
+    sidecar_path = h3_conditioning.get("sidecar")
+    if "sidecar" not in manifest_conditioning or not isinstance(sidecar_path, str):
+        raise ContractError("h3cspeed manifest must bind a conditioning sidecar")
+    sidecar = safe_regular(Path(sidecar_path), "h3cspeed conditioning sidecar")
+    if sha256_file(sidecar) != manifest_conditioning["sidecar"]:
+        raise ContractError("h3cspeed conditioning sidecar does not match the manifest")
+    sidecar_env = environment.get("H3CSPEED_TEXT_EMBEDDING")
+    if (not isinstance(sidecar_env, str) or not Path(sidecar_env).is_absolute() or
+            Path(os.path.abspath(sidecar_env)) != Path(os.path.abspath(sidecar))):
+        raise ContractError("H3CSPEED_TEXT_EMBEDDING must equal the manifest sidecar")
+
+    qwen_hash = manifest_models.get("qwen")
+    encoder_hash = environment.get("H3CSPEED_TEXT_ENCODER_SHA256")
+    if (not isinstance(qwen_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", qwen_hash) or
+            not isinstance(encoder_hash, str) or encoder_hash.lower() != qwen_hash):
+        raise ContractError("H3CSPEED_TEXT_ENCODER_SHA256 must equal the manifest Qwen hash")
+    _validate_h3_sidecar(sidecar, prompt_bytes, manifest["fixture"]["sha256"], qwen_hash)
+    if environment.get("H3_CUDA_TF32") != "0":
+        raise ContractError("h3cspeed algorithm-parity smoke requires H3_CUDA_TF32=0")
+    if environment.get("H3_CUDA_ATTENTION") != "sage":
+        raise ContractError("h3cspeed algorithm-parity smoke requires Sage attention")
+    engine_bindings = _mapping(
+        _mapping(_mapping(config.get("bindings"), "bindings").get("engines"),
+                 "bindings.engines").get("h3cspeed"),
+        "bindings.engines.h3cspeed",
+    )
+    native_ffmpeg_value = engine_bindings.get("ffmpeg")
+    if not isinstance(native_ffmpeg_value, str):
+        raise ContractError("h3cspeed engine bindings lack ffmpeg")
+    native_ffmpeg = safe_regular(Path(native_ffmpeg_value), "h3cspeed native ffmpeg")
+    ffmpeg_env = environment.get("H3_FFMPEG")
+    if (not isinstance(ffmpeg_env, str) or not Path(ffmpeg_env).is_absolute() or
+            Path(os.path.abspath(ffmpeg_env)) != Path(os.path.abspath(native_ffmpeg))):
+        raise ContractError("H3_FFMPEG must equal the manifest-bound ffmpeg")
+
+
+def _validate_h3_qa_tools(config: dict[str, Any], manifest: dict[str, Any],
+                          ffmpeg: str, ffprobe: str) -> None:
+    bindings = _mapping(
+        _mapping(_mapping(config.get("bindings"), "bindings").get("engines"),
+                 "bindings.engines").get("h3cspeed"),
+        "bindings.engines.h3cspeed",
+    )
+    manifest_engines = _mapping(manifest["engines"].get("h3cspeed"),
+                                "manifest.engines.h3cspeed")
+    for label, value in (("ffmpeg", ffmpeg), ("ffprobe", ffprobe)):
+        binding = bindings.get(label)
+        if label not in manifest_engines or not isinstance(binding, str):
+            raise ContractError(f"h3cspeed engine bindings lack {label}")
+        bound = safe_regular(Path(binding), f"h3cspeed bound {label}")
+        actual = safe_regular(Path(value), f"h3cspeed QA {label}")
+        if actual != bound or sha256_file(actual) != manifest_engines[label]:
+            raise ContractError(f"h3cspeed QA {label} is not manifest-bound")
+
+
 def _validate_command(config: dict[str, Any], manifest: dict[str, Any],
                       engine: str) -> list[str]:
     if config.get("schema_version") != SCHEMA_VERSION or config.get("engine") != engine:
@@ -378,6 +646,7 @@ def _validate_command(config: dict[str, Any], manifest: dict[str, Any],
                 command_artifacts["executable"]["label"] != "binary" or
                 command_artifacts["driver"]["label"] != "binary"):
             raise ContractError("h3cspeed smoke must directly execute its bound binary")
+        _validate_h3_command(config, manifest, argv)
     elif (resolved_indices["driver"] != 1 or
           command_artifacts["executable"]["label"] != "python_env" or
           command_artifacts["driver"]["label"] != "source" or
@@ -457,8 +726,8 @@ def _validate_command(config: dict[str, Any], manifest: dict[str, Any],
         else:
             safe_existing_directory(runtime.parent, "ComfyUI runtime parent")
         argv[runtime_indices[0] + 1] = str(Path(os.path.abspath(runtime)))
-    elif command_inputs:
-        raise ContractError("h3cspeed command_inputs must be empty")
+    elif engine != "h3cspeed" and command_inputs:
+        raise ContractError("unsupported engine command_inputs")
     return argv
 
 
@@ -608,6 +877,8 @@ def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
 
     before = verify_bound_inputs(manifest, config, engine)
     argv = _validate_command(config, manifest, engine)
+    if engine == "h3cspeed":
+        _validate_h3_qa_tools(config, manifest, ffmpeg, ffprobe)
     environment = _private_environment(config.get("environment", {}))
     media = Path(config["output_media"])
     scheduler_trace = Path(config["scheduler_trace"])
