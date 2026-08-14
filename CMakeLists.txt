@@ -346,6 +346,12 @@ if(H3CSPEED_ENABLE_TESTS)
     target_link_libraries(test_cuda_scale_add PRIVATE h3cspeed_core)
     set_target_properties(test_cuda_scale_add PROPERTIES
         LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    add_executable(test_cuda_offload tests/test_cuda_offload.cu)
+    target_include_directories(test_cuda_offload PRIVATE
+        src "${H3CSPEED_H3_SOURCE_DIR}")
+    target_link_libraries(test_cuda_offload PRIVATE h3cspeed_core)
+    set_target_properties(test_cuda_offload PROPERTIES
+        LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
     add_executable(test_cuda_numeric_regression
         tests/test_cuda_numeric_regression.c)
     target_include_directories(test_cuda_numeric_regression PRIVATE
@@ -412,6 +418,8 @@ if(H3CSPEED_ENABLE_TESTS)
         target_compile_definitions(test_cuda_scale_add PRIVATE
             _CRT_SECURE_NO_WARNINGS)
         target_compile_options(test_cuda_scale_add PRIVATE /W4 /WX /permissive-)
+        target_compile_definitions(test_cuda_offload PRIVATE
+            _CRT_SECURE_NO_WARNINGS)
         target_compile_definitions(test_cuda_numeric_regression PRIVATE
             _CRT_SECURE_NO_WARNINGS)
         target_compile_options(test_cuda_numeric_regression PRIVATE
@@ -465,6 +473,14 @@ if(H3CSPEED_ENABLE_TESTS)
     add_test(NAME cuda_scale_add COMMAND test_cuda_scale_add)
     add_test(NAME text_embedding_file COMMAND test_text_embedding_file)
     set_tests_properties(cuda_scale_add PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME cuda_offload_disabled COMMAND test_cuda_offload)
+    set_tests_properties(cuda_offload_disabled PROPERTIES
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=0;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=0")
+    add_test(NAME cuda_offload_async_refill COMMAND test_cuda_offload)
+    set_tests_properties(cuda_offload_async_refill PROPERTIES
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=0;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=1")
     add_test(NAME cuda_numeric_regression COMMAND test_cuda_numeric_regression)
     set_tests_properties(cuda_numeric_regression PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME cuda_convrot_numeric COMMAND test_cuda_convrot_numeric)

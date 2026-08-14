@@ -449,6 +449,7 @@ profiles/rtx3070ti-8gb.env
 | `H3_CUDA_HOST_CACHE_MIB` | 自動 | 預設目前可用系統 RAM 的 60%，最高 64GiB |
 | `H3_CUDA_PINNED_HOST_MIB` | `128` | pinned RAM 上限，不含 staging |
 | `H3_CUDA_STAGING_MIB` | `64` | RAM／SSD 搬到 GPU 的分段緩衝區 |
+| `H3_CUDA_ASYNC_REFILL` | 未設定 | 僅精確設為 `1` 時，將 pinned staging 切成兩個具 event fence 的 refill slot |
 | `H3_CUDA_RELEASE_SCRATCH` | `1` | submit 後釋放 GPU scratch |
 
 96GB 主機可明確配置約 56GB RAM 快取：

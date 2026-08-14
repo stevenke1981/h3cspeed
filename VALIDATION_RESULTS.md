@@ -199,6 +199,25 @@
   the portable overlay passed 13/13 and API coverage remained 103/103.
   Compute Sanitizer on the same focused scale-add test reported memcheck 0
   errors and racecheck 0 hazards, errors or warnings.
+- The PERF-005 asynchronous refill primitive used the same RTX 3070 Ti 8 GiB
+  (`sm_86`), driver 596.36 and CUDA 13.2 host. `test_cuda_offload` ran with a
+  512 MiB VRAM budget, 128 MiB weight cache, zero host cache and a 4 MiB
+  staging allocation. Five 32 MiB file-backed tensors forced six file refills,
+  six uploads (192 MiB) and two evictions (64 MiB); canaries at every 2 MiB
+  slot boundary and each tensor tail survived the eviction/reload cycle.
+  Parallel CTest ran the disabled and two-slot paths together and passed 2/2.
+  Compute Sanitizer on the enabled path reported memcheck 0 errors and
+  racecheck 0 hazards. Schema-v1 reports validated for both paths: upload-stream
+  synchronizations fell from 151 to 103 and upload-stream host wait from
+  31.5524 ms to 0.0184 ms, while event synchronization carried the slot
+  dependency (12 to 106 events, 14.6245 ms event wait). Both paths uploaded the
+  same 192 MiB and peaked at 128 MiB device memory. Their single-run context
+  walls were 0.2198 s and 0.1977 s; this is diagnostic evidence, not a stable
+  speed claim. PERF-005 therefore has an event-safe, opt-in refill primitive
+  and focused file-backed stress PASS, while Nsight/equivalent non-zero
+  read/H2D/compute overlap, pageable-allocation failure injection,
+  generated-INT8 cycling, matched 22-frame upload-wait reduction and the
+  124-frame target remain `NOT_RUN`.
 
 Observed low-VRAM policy on the acceptance machine:
 

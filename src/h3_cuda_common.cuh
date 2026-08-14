@@ -77,6 +77,14 @@ struct h3_gpu {
     void *staging;
     size_t staging_bytes;
     int staging_pinned;
+    /* When explicitly enabled, one pinned allocation is divided into two
+     * equal refill slots.  Each slot has its own DMA completion fence so the
+     * CPU can refill the other slot while the upload stream is transferring. */
+    void *staging_slots[2];
+    size_t staging_slot_bytes;
+    cudaEvent_t staging_done[2];
+    int staging_done_valid[2];
+    int async_refill_enabled;
     size_t device_live_bytes;
     size_t resident_weight_bytes;
     size_t host_cache_live_bytes;

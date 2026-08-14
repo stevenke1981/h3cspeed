@@ -479,7 +479,7 @@ traffic counters and media QA evidence.
 | PERF-002 | Reproducible ComfyUI/h3cspeed A/B manifest/driver | PERF-001 | 002A/B manifest/media + 002C isolated adapter and h3 runtime trace producer implemented; bound-host 22-frame smokes `SMOKE_PASS`; matched A/B `NOT_RUN` |
 | PERF-003 | F32 hidden-pool state-size spike + tile/layer parity harness | PERF-001 | ownership/memory model + same-latent 22-frame proof |
 | PERF-004 | Layer-major F32 VAE execution via verified overlay | PERF-003 | 22f traffic/media parity PASS; 124f <40 GiB and >=3x VAE wall `NOT_RUN` |
-| PERF-005 | Double-buffered async refill primitives | PERF-001 | event-safe focused overlap trace |
+| PERF-005 | Double-buffered async refill primitives | PERF-001 | opt-in two-slot/file-backed stress + sanitizer PASS; real overlap, generated INT8 and 22f wall gates pending |
 | PERF-006 | DiT next-block prefetch schedule | PERF-005 | >=50% upload-wait reduction |
 | PERF-007 | Phase cache lifecycle + 8GB cache sweep | PERF-004/006 | no stale phase entries, ten-run stability |
 | PERF-008 | Shape-specific kernel autotuning/fusion | PERF-004/006 | numeric/sanitizer/per-shape speed gate |
@@ -513,15 +513,19 @@ to 2,036.43 MiB. This proves the 22-frame traffic/media-parity win, but not a
 VAE wall-speedup claim: candidate VAE profile wall was 107.4532 s with only
 86.145% accounted coverage (`coverage=false`).
 
-The immediate next change is to run the matched tile-major baseline profile
-with the same profiling schema, then optimize the measured compute-wait
-59.767 s, file-read 28.570 s and eviction 9.689 s buckets while preserving
-same-latent numerical parity, BF16 boundaries, native tensor layout and the
-shared low-VRAM budget. Re-run the focused 864x480/22-frame traffic/parity
-gates after each change and record upload/eviction bytes, peak VRAM/RAM, wall
-time, accounting coverage and full media evidence. Then prepare the complete
-matched 864x480/124-frame/8-step matrix with one cold plus three warm trials
-per engine, including the 124-frame <40 GiB and PERF-001 95% gates.
+The PERF-005 primitive now has an opt-in, two-slot pinned refill path. The
+focused 512 MiB test exercised six 32 MiB file refills, two evictions and
+parallel disabled/enabled CTest runs; memcheck and racecheck were clean. This
+does not yet prove prefetch overlap or a model speedup. The immediate next
+change is to add an equivalent event timeline for real file-read/H2D/compute
+overlap and then apply the primitive to the known next-block DiT schedule under
+PERF-006. Run a matched cold 864x480/22-frame baseline/candidate pair with the
+same binary and profile schema, require at least 50% lower exclusive DiT
+upload-wait, and preserve numerical/media parity. Generated-INT8 cycling and
+pageable-allocation failure injection remain focused test debt. Only after
+these gates pass should the complete matched 864x480/124-frame/8-step matrix
+run with one cold plus three warm trials per engine, including the 124-frame
+<40 GiB and PERF-001 95% gates.
 
 The h3cspeed producer records actual serving sigma arrays and `dit_bf16` Sage
 hit/expected-native/unexpected-fallback counters through opt-in, no-clobber

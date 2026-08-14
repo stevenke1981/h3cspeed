@@ -36,8 +36,12 @@ Acceptance:
 
 ## Gate 2 — memory-manager unit stress on GPU
 
-Add a CUDA test that creates multiple file-backed and generated tensors with a
-small artificial VRAM budget, then repeatedly accesses them in a known order.
+`test_cuda_offload` creates multiple multi-chunk file-backed tensors under a
+small artificial VRAM budget, forces eviction/reload, and validates canaries at
+every staging-slot boundary and tensor tail. CTest runs both the legacy
+synchronous path and `H3_CUDA_ASYNC_REFILL=1`; the two cases use unique fixture
+names so they are safe under parallel CTest. Generated-INT8 cycling remains a
+separate completion gate.
 Acceptance:
 
 - no use-after-free under Compute Sanitizer;
@@ -54,6 +58,11 @@ Run:
 compute-sanitizer --tool memcheck ./build/test_cuda_offload
 compute-sanitizer --tool racecheck ./build/test_cuda_offload
 ```
+
+The focused file-backed test is necessary but not sufficient for PERF-005. A
+non-zero read/H2D/compute overlap trace, generated-INT8 repeated eviction,
+resident/offloaded model parity, and the fixed 22-frame upload-wait reduction
+must still be measured before the phase is marked complete.
 
 ## Gate 3 — released operation fixtures
 

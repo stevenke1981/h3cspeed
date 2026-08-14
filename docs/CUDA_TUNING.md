@@ -43,6 +43,8 @@ an immediate allocation failure.
 - `H3_CUDA_HOST_CACHE_MIB=N`
 - `H3_CUDA_PINNED_HOST_MIB=N`
 - `H3_CUDA_STAGING_MIB=N`
+- `H3_CUDA_ASYNC_REFILL=1` opt in to two event-fenced refill slots inside the
+  existing pinned staging allocation
 - `H3_CUDA_RELEASE_SCRATCH=0|1`
 - `H3_CUDA_OFFLOAD_VERBOSE=1`
 - `H3_CUDA_DEVICE=N`
@@ -50,6 +52,15 @@ an immediate allocation failure.
 - `H3_PROFILE=1` print memory traffic and dispatch counters
 - `H3_PROFILE_JSON_DIR=PATH` enable profiling and atomically write one
   machine-readable JSON report per CUDA context to an existing directory
+
+`H3_CUDA_ASYNC_REFILL` is deliberately disabled by default. When it is exactly
+`1` and the staging allocation is pinned, the runtime splits the configured
+staging window into two equal slots. A slot is reused only after its recorded
+H2D completion event finishes; the tensor upload-ready event is still recorded
+after all chunks have been enqueued. If pinned staging or either slot event is
+unavailable, the runtime keeps the original single-buffer synchronous path.
+This switch does not increase the configured staging allocation and does not by
+itself prove end-to-end DiT overlap or a video wall-time improvement.
 
 ## Machine-readable profile reports
 

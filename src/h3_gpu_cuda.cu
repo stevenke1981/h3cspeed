@@ -31,6 +31,11 @@ static int environment_flag_enabled(const char *name) {
            strcasecmp(value, "no") != 0;
 }
 
+static int async_refill_requested(void) {
+    const char *value = getenv("H3_CUDA_ASYNC_REFILL");
+    return value && strcmp(value, "1") == 0;
+}
+
 enum h3cspeed_profile_stream {
     H3CSPEED_PROFILE_STREAM_COMPUTE = 0,
     H3CSPEED_PROFILE_STREAM_UPLOAD = 1
@@ -467,7 +472,74 @@ static int staging_allocate_locked(h3_gpu *gpu) {
         return 0;
     }
     gpu->staging_bytes = requested;
+    gpu->staging_slot_bytes = 0;
+    gpu->staging_slots[0] = nullptr;
+    gpu->staging_slots[1] = nullptr;
+    gpu->staging_done[0] = nullptr;
+    gpu->staging_done[1] = nullptr;
+    gpu->staging_done_valid[0] = 0;
+    gpu->staging_done_valid[1] = 0;
+    /* The opt-in path is deliberately restricted to pinned memory.  A
+     * pageable fallback cannot safely overlap CPU refills with DMA. */
+    if (gpu->async_refill_enabled && gpu->staging_pinned && requested >= 2) {
+        size_t slot_bytes = requested / 2;
+        if (slot_bytes) {
+            cudaError_t first = cudaEventCreateWithFlags(
+                &gpu->staging_done[0], cudaEventDisableTiming);
+            cudaError_t second = first == cudaSuccess ?
+                cudaEventCreateWithFlags(&gpu->staging_done[1],
+                                         cudaEventDisableTiming) : first;
+            if (first == cudaSuccess && second == cudaSuccess) {
+                gpu->staging_slots[0] = gpu->staging;
+                gpu->staging_slots[1] = static_cast<unsigned char *>(
+                    gpu->staging) + slot_bytes;
+                gpu->staging_slot_bytes = slot_bytes;
+            } else {
+                if (gpu->staging_done[0]) {
+                    (void)cudaEventDestroy(gpu->staging_done[0]);
+                    gpu->staging_done[0] = nullptr;
+                }
+                if (gpu->staging_done[1]) {
+                    (void)cudaEventDestroy(gpu->staging_done[1]);
+                    gpu->staging_done[1] = nullptr;
+                }
+                gpu->async_refill_enabled = 0;
+                (void)cudaGetLastError();
+            }
+        }
+    }
     return 1;
+}
+
+static int async_refill_active(const h3_gpu *gpu) {
+    return gpu && gpu->async_refill_enabled && gpu->staging_slot_bytes &&
+           gpu->staging_slots[0] && gpu->staging_slots[1] &&
+           gpu->staging_done[0] && gpu->staging_done[1];
+}
+
+static int drain_upload_stream(h3_gpu *gpu, const char *operation) {
+    if (!gpu || !gpu->upload_stream) return 1;
+    return h3cspeed_cuda_ok(
+        gpu,
+        profiled_stream_synchronize(gpu, gpu->upload_stream,
+                                    H3CSPEED_PROFILE_STREAM_UPLOAD),
+        operation ? operation : "drain upload stream after staging failure");
+}
+
+static int staging_slot_wait_locked(h3_gpu *gpu, size_t slot) {
+    if (!async_refill_active(gpu) || slot >= 2 ||
+        !gpu->staging_done_valid[slot]) return 1;
+    return h3cspeed_cuda_ok(
+        gpu, profiled_event_synchronize(gpu, gpu->staging_done[slot]),
+        "wait for staging slot DMA before refill");
+}
+
+static int staging_slot_record_locked(h3_gpu *gpu, size_t slot) {
+    if (!async_refill_active(gpu) || slot >= 2) return 1;
+    cudaError_t status = cudaEventRecord(gpu->staging_done[slot],
+                                         gpu->upload_stream);
+    if (status == cudaSuccess) gpu->staging_done_valid[slot] = 1;
+    return h3cspeed_cuda_ok(gpu, status, "record staging slot DMA");
 }
 
 static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
@@ -478,7 +550,11 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
         if (!h3cspeed_cuda_ok(gpu,
             profiled_h2d_async(gpu, tensor->data, tensor->host_data,
                                tensor->source_bytes, gpu->upload_stream),
-            "upload pinned host weight")) return 0;
+            "upload pinned host weight")) {
+            (void)drain_upload_stream(gpu,
+                                       "drain upload stream after pinned upload failure");
+            return 0;
+        }
     } else {
         pthread_mutex_lock(&gpu->staging_lock);
         if (!staging_allocate_locked(gpu)) {
@@ -494,6 +570,8 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
                          tensor->source_path ? tensor->source_path : "(null)",
                          strerror(errno));
                 h3cspeed_set_error(gpu, "file-backed weight upload", detail);
+                (void)drain_upload_stream(gpu,
+                                           "drain upload stream after file open failure");
                 pthread_mutex_unlock(&gpu->staging_lock);
                 return 0;
             }
@@ -508,11 +586,23 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
         size_t done = 0;
         int ok = 1;
         while (done < tensor->source_bytes) {
+            const int use_async_refill = async_refill_active(gpu);
+            const size_t chunk_index = gpu->staging_slot_bytes ?
+                done / gpu->staging_slot_bytes : 0;
+            const size_t slot = chunk_index & 1u;
+            if (use_async_refill && !staging_slot_wait_locked(gpu, slot)) {
+                ok = 0;
+                break;
+            }
+            void *staging = use_async_refill ? gpu->staging_slots[slot] :
+                gpu->staging;
+            const size_t staging_capacity = use_async_refill ?
+                gpu->staging_slot_bytes : gpu->staging_bytes;
             size_t chunk = std::min(tensor->source_bytes - done,
-                                    gpu->staging_bytes);
+                                    staging_capacity);
             if (descriptor >= 0) {
                 char read_error[256] = {0};
-                if (!read_exact(gpu, descriptor, gpu->staging, chunk,
+                if (!read_exact(gpu, descriptor, staging, chunk,
                                 tensor->source_offset + done,
                                 read_error, sizeof(read_error))) {
                     h3cspeed_set_error(gpu, "file-backed weight read", read_error);
@@ -522,7 +612,7 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
             } else {
                 double copy_started = gpu->profile_enabled ?
                     h3cspeed_profile_now_seconds() : 0.0;
-                memcpy(gpu->staging,
+                memcpy(staging,
                        static_cast<const unsigned char *>(tensor->host_data) + done,
                        chunk);
                 if (gpu->profile_enabled)
@@ -532,8 +622,13 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
             if (!h3cspeed_cuda_ok(gpu,
                 profiled_h2d_async(
                     gpu, static_cast<unsigned char *>(tensor->data) + done,
-                    gpu->staging, chunk, gpu->upload_stream),
+                    staging, chunk, gpu->upload_stream),
                 "staged host weight upload") ||
+                (use_async_refill && !staging_slot_record_locked(gpu, slot))) {
+                ok = 0;
+                break;
+            }
+            if (!use_async_refill &&
                 !h3cspeed_cuda_ok(gpu,
                     profiled_stream_synchronize(
                         gpu, gpu->upload_stream,
@@ -545,6 +640,8 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
             done += chunk;
         }
         if (descriptor >= 0) close(descriptor);
+        if (!ok) (void)drain_upload_stream(gpu,
+                                           "drain upload stream after staging failure");
         pthread_mutex_unlock(&gpu->staging_lock);
         if (!ok) return 0;
         if (!tensor->host_data || !tensor->host_valid) {
@@ -558,8 +655,14 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
                                 tensor->source_bytes,
                             0, tensor->bytes - tensor->source_bytes,
                             gpu->upload_stream),
-            "zero unused weight slot tail")) return 0;
-    if (!h3cspeed_tensor_record_upload(tensor)) return 0;
+            "zero unused weight slot tail")) {
+        (void)drain_upload_stream(gpu, "drain upload stream after staging failure");
+        return 0;
+    }
+    if (!h3cspeed_tensor_record_upload(tensor)) {
+        (void)drain_upload_stream(gpu, "drain upload stream after upload event failure");
+        return 0;
+    }
     gpu->offload_uploads++;
     gpu->offload_upload_bytes += tensor->source_bytes;
     return 1;
@@ -710,6 +813,7 @@ extern "C" h3_gpu *h3_gpu_create(const char *shader_source_path,
     pthread_mutex_init(&gpu->scratch_lock, nullptr);
     pthread_mutex_init(&gpu->offload_lock, nullptr);
     pthread_mutex_init(&gpu->staging_lock, nullptr);
+    gpu->async_refill_enabled = async_refill_requested();
     const char *profile_json_dir = getenv("H3_PROFILE_JSON_DIR");
     gpu->profile_enabled = environment_flag_enabled("H3_PROFILE") ||
                            (profile_json_dir && *profile_json_dir);
@@ -905,6 +1009,8 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
     }
     profile_write_final_report(gpu);
     if (gpu->scratch) cudaFree(gpu->scratch);
+    if (gpu->staging_done[0]) cudaEventDestroy(gpu->staging_done[0]);
+    if (gpu->staging_done[1]) cudaEventDestroy(gpu->staging_done[1]);
     if (gpu->staging) {
         if (gpu->staging_pinned) cudaFreeHost(gpu->staging);
         else free(gpu->staging);
@@ -1207,7 +1313,8 @@ static int tensor_read_file(h3_gpu_tensor *tensor, const char *path,
     size_t done = 0;
     while (ok && done < bytes) {
         size_t chunk = std::min(bytes - done, gpu->staging_bytes);
-        if (!read_exact(gpu, descriptor, gpu->staging, chunk, file_offset + done,
+        if (!read_exact(gpu, descriptor, gpu->staging, chunk,
+                        file_offset + done,
                         error, error_size) ||
             !h3cspeed_cuda_ok(gpu,
                 profiled_h2d_async(
