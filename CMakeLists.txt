@@ -33,6 +33,9 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
     find_package(Threads REQUIRED)
     enable_testing()
     add_executable(test_resize tests/test_resize.c src/h3_resize_portable.c)
+    add_executable(test_model_config tests/test_model_config.c
+        src/h3_model_config.c src/h3_model_compat.c)
+    target_include_directories(test_model_config PRIVATE src)
     add_executable(test_offload_policy tests/test_offload_policy.c
         src/h3_offload_policy.c)
     add_executable(test_profile_report tests/test_profile_report.c
@@ -77,6 +80,7 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
         target_compile_options(test_resize PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME portable_resize COMMAND test_resize)
+    add_test(NAME model_config COMMAND test_model_config)
     add_test(NAME offload_policy COMMAND test_offload_policy)
     add_test(NAME profile_report_schema
         COMMAND ${Python3_EXECUTABLE}
@@ -342,6 +346,9 @@ if(H3CSPEED_ENABLE_TESTS)
     enable_testing()
     add_executable(test_resize tests/test_resize.c src/h3_resize_portable.c)
     target_include_directories(test_resize PRIVATE src)
+    add_executable(test_model_config tests/test_model_config.c
+        src/h3_model_config.c src/h3_model_compat.c)
+    target_include_directories(test_model_config PRIVATE src)
     add_executable(test_cuda_scale_add tests/test_cuda_scale_add.c)
     target_include_directories(test_cuda_scale_add PRIVATE
         "${H3CSPEED_H3_SOURCE_DIR}")
@@ -419,6 +426,9 @@ if(H3CSPEED_ENABLE_TESTS)
         src/h3_offload_policy.c)
     target_include_directories(test_offload_policy PRIVATE src)
     if(MSVC)
+        target_compile_definitions(test_model_config PRIVATE
+            _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(test_model_config PRIVATE /W4 /WX /permissive-)
         target_compile_definitions(test_offload_policy PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_compile_definitions(test_resize PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_compile_options(test_offload_policy PRIVATE /W4 /WX /permissive-)
@@ -455,6 +465,8 @@ if(H3CSPEED_ENABLE_TESTS)
         target_compile_options(test_text_embedding_file PRIVATE
             /W4 /WX /permissive- /FI${CMAKE_CURRENT_SOURCE_DIR}/src/h3_msvc_compat.h)
     else()
+        target_compile_options(test_model_config PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror)
         target_compile_options(test_offload_policy PRIVATE
             -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror)
         target_link_libraries(test_resize PRIVATE m)
@@ -479,6 +491,7 @@ if(H3CSPEED_ENABLE_TESTS)
         target_link_options(test_resize PRIVATE -fsanitize=address,undefined)
     endif()
     add_test(NAME portable_resize COMMAND test_resize)
+    add_test(NAME model_config COMMAND test_model_config)
     add_test(NAME offload_policy COMMAND test_offload_policy)
     add_test(NAME cuda_scale_add COMMAND test_cuda_scale_add)
     add_test(NAME text_embedding_file COMMAND test_text_embedding_file)
@@ -570,6 +583,12 @@ endif()
 install(PROGRAMS scripts/run-3070ti-8gb.sh
     DESTINATION ${CMAKE_INSTALL_BINDIR}
     RENAME h3cspeed-3070ti-8gb
+)
+install(PROGRAMS
+    scripts/h3_model_info.py
+    scripts/h3_model_metadata.py
+    scripts/h3_safetensors_info.py
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(PROGRAMS scripts/smoke-3070ti-8gb.sh
     DESTINATION ${CMAKE_INSTALL_BINDIR}

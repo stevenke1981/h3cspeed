@@ -46,6 +46,30 @@ has_option() {
     return 1
 }
 
+model_directory_option() {
+    local -a values=("$@")
+    local index
+    for ((index = 0; index < ${#values[@]}; index++)); do
+        case "${values[index]}" in
+            -d|--model-dir)
+                if (( index + 1 < ${#values[@]} )); then
+                    printf '%s\n' "${values[index + 1]}"
+                    return 0
+                fi
+                ;;
+            --model-dir=*)
+                printf '%s\n' "${values[index]#--model-dir=}"
+                return 0
+                ;;
+            -d?*)
+                printf '%s\n' "${values[index]#-d}"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
 args=("$@")
 if ! has_option --ssd-streaming "${args[@]}"; then
     args+=(--ssd-streaming)
@@ -98,6 +122,29 @@ if ! has_option --width "${args[@]}" &&
    ! has_option --render-width "${args[@]}" &&
    ! has_option --render-height "${args[@]}"; then
     args+=(--width 256 --height 256)
+fi
+
+# stable-diffusion.cpp detects MiniMax-H3 dimensions and the time-embedder vs
+# AdaLN curve-table variant from tensor metadata. Run the matching header-only
+# h3cspeed preflight before allocating CUDA memory when the inspector is
+# available. "auto" is fail-open for packaged runtimes without Python; set
+# H3_MODEL_PREFLIGHT=required to make the inspector mandatory, or 0 to disable.
+preflight_mode="${H3_MODEL_PREFLIGHT:-auto}"
+if [[ "$preflight_mode" != "0" && "$preflight_mode" != "off" ]]; then
+    inspector=""
+    if [[ -f "$SCRIPT_DIR/h3_model_info.py" ]]; then
+        inspector="$SCRIPT_DIR/h3_model_info.py"
+    elif [[ -f "$ROOT/scripts/h3_model_info.py" ]]; then
+        inspector="$ROOT/scripts/h3_model_info.py"
+    fi
+    model_dir="$(model_directory_option "${args[@]}" || true)"
+    if [[ -n "$model_dir" && -n "$inspector" ]] && command -v python3 >/dev/null 2>&1; then
+        echo "h3cspeed: validating H3 model metadata before CUDA allocation" >&2
+        python3 "$inspector" "$model_dir" --strict-h3cspeed >&2
+    elif [[ "$preflight_mode" == "required" || "$preflight_mode" == "1" ]]; then
+        echo "error: H3 model preflight requires python3 and h3_model_info.py" >&2
+        exit 2
+    fi
 fi
 
 exec "$H3_BINARY" "${args[@]}"

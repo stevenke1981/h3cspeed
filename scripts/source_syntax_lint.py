@@ -417,6 +417,8 @@ def main() -> int:
                     root / "src/h3_profile.c",
                     root / "src/h3_perf002_trace.c",
                     root / "src/h3_cuda_info_main.c",
+                    root / "src/h3_model_config.c",
+                    root / "src/h3_model_compat.c",
                 ):
                     run([
                         compiler, "-std=c11", "-D_GNU_SOURCE",

@@ -505,3 +505,35 @@ calling this an architecture-wide production release.
   reached `SMOKE_PASS`; an individual `SMOKE_PASS` is still not matched A/B
   or a speed/quality result. The full hashes and timings are recorded in the
   bound-host smoke evidence above.
+
+## Stable-diffusion.cpp alignment overlay (2026-08-15)
+
+- Integrated the 12-file `h3cspeed-stable-diffusion-cpp-alignment-overlay` at
+  archive SHA-256
+  `53A67668A4253BB2EBAF29BFC4EEB1B4DA096ED6D6F31877A5548765A17B8EBE`, based
+  on upstream alignment commit
+  `d8d2616c631e0f9320b1f6d6efc3e05575e05865`. The integration is limited to
+  header-only MiniMax-H3 safetensors inspection, geometry normalization
+  reporting, fail-fast compatibility checks, and the 3070 Ti launcher
+  preflight; it does not change CUDA kernels, tensor layout, offload events,
+  or public GPU ABI.
+- Python inspector tests passed 10/10, the C11 model-config executable passed
+  7/7, both alignment shell scripts passed `bash -n`, and the full overlay
+  CMake/CTest suite passed 20/20 with the new `model_config` test. The
+  required API check remained 103/103, bootstrap verification passed, and
+  source syntax lint passed with the two new C sources included.
+- The repository-wide Python discovery completed 126 tests with 11 expected
+  environment skips; the native CMake/CTest suite completed 24 tests with one
+  explicit VAE parity skip because no model-root argument was supplied.
+- The alignment package's model-compat script also passed end-to-end using
+  Python 3.14 and LLVM clang on Windows Git Bash. No GPU model load,
+  numerical parity, or throughput claim is made by this overlay; those remain
+  covered by the existing CUDA and bound-host evidence gates.
+- A header-only strict preflight of the available bound FL2VA model root
+  identified the real `adaln-curves` transformer (`1025 x 8` curve table,
+  50 blocks, 5376 hidden) as compatible with the current pinned AdaLN schedule.
+  This check reads safetensors metadata only and does not load weights or
+  start inference.
+- The real RTX 3070 Ti launcher path was exercised with that model root and
+  `--help`: preflight ran before the binary, the CLI returned successfully, and
+  no model inference or CUDA allocation was started.
