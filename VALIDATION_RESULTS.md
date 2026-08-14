@@ -171,6 +171,17 @@
   124-frame <40 GiB / >=3x wall gates remain pending PERF-001
   instrumentation; the tile-major device peak matches the accepted 864x480
   production baseline exactly.
+- The real 864x480/22-frame/2-step h3cspeed layer-major candidate preserved the
+  exact baseline media SHA-256
+  `54077780f5d45cfcd9d5b44b0fea91cea9c4fc15dceecf31cd60d376c9795f5b`.
+  Video VAE traffic fell from 3,528 uploads / 72.23 GiB and 79.78 GiB
+  evictions to 441 uploads / 9.03 GiB and 16.58 GiB evictions; VAE device peak
+  rose from 1,909.68 MiB to 2,036.43 MiB. This is a PASS for the 22-frame
+  layer-major traffic and media-parity candidate, not a full PERF-004 PASS.
+  The candidate VAE profile wall was 107.4532 s with only 86.145% accounted
+  coverage (`coverage=false`), so the >=3x VAE-wall gate is `NOT_RUN` pending a
+  matched baseline profile. The 124-frame <40 GiB target and PERF-001 95%
+  wall-accounting/disabled-overhead gates remain `NOT_RUN`/`NOT_MET`.
 - The PERF-001 machine-readable profiler smoke used Windows 10 build 19045,
   RTX 3070 Ti 8 GiB (`sm_86`), driver 596.36, CUDA 13.2.78, MSVC
   19.44.35227, a Release architecture-86 `build-quant`, and
@@ -267,6 +278,26 @@ calling this an architecture-wide production release.
   conditioning and cache behavior. They are not a fair speed ranking. The
   matched 124-frame/8-step one-cold-plus-three-warm A/B remains `NOT RUN`, and
   PERF-001 95% wall-accounting/disabled-overhead gates remain `NOT RUN`.
+
+## PERF-004 layer-major bound-host candidate (2026-08-14)
+
+- The candidate used the same immutable manifest, prompt, first frame, seed and
+  864x480/22-frame/2-step h3cspeed contract as the tile-major baseline, with
+  `H3_VAE_LAYER_MAJOR=1`. Its final media SHA-256 was exactly the baseline
+  `54077780f5d45cfcd9d5b44b0fea91cea9c4fc15dceecf31cd60d376c9795f5b`.
+- Video VAE traffic changed from 3,528 uploads / 72.23 GiB and 79.78 GiB
+  evictions to 441 uploads / 9.03 GiB and 16.58 GiB evictions. Device peak
+  changed from 1,909.68 MiB to 2,036.43 MiB. The 22-frame traffic reduction
+  and exact media parity are `PASS` for this candidate.
+- Candidate VAE profile wall was 107.4532 s, but accounted coverage was only
+  86.145% with `coverage=false`; no >=3x VAE-wall claim is accepted. Full
+  process wall moved from 688.2389 s to 677.5203 s (-1.56%) in this single
+  baseline/candidate comparison; it is not the required cold-plus-three-warm
+  matched A/B.
+- PERF-004 >=3x VAE wall is `NOT_RUN`; the 124-frame <40 GiB target is
+  `NOT_RUN`; PERF-001 95% wall accounting and profiling-disabled overhead are
+  `NOT_RUN`/`NOT_MET`. Compute-wait, file-read and eviction optimization must
+  not be inferred from the traffic win alone.
 
 ## PERF-002C h3 runtime evidence producer (2026-08-14)
 

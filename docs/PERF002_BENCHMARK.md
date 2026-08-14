@@ -205,6 +205,29 @@ conditioning, cache state and graph overhead are not matched. The required
 124-frame/8-step matched A/B (one cold plus three warm trials) remains
 `NOT_RUN`, as do native-control and PERF-001 wall-accounting gates.
 
+## PERF-004 layer-major bound-host candidate (2026-08-14)
+
+The h3cspeed candidate kept the same manifest, prompt, first frame, seed and
+864x480/22-frame/2-step contract while enabling `H3_VAE_LAYER_MAJOR=1`.
+Its final media SHA-256 exactly matched the tile-major baseline:
+`54077780f5d45cfcd9d5b44b0fea91cea9c4fc15dceecf31cd60d376c9795f5b`.
+
+- Video VAE uploads: `3528 / 72.23 GiB` to `441 / 9.03 GiB`.
+- Video VAE evictions: `79.78 GiB` to `16.58 GiB`.
+- Video VAE device peak: `1909.68 MiB` to `2036.43 MiB`.
+- Candidate VAE profile wall: `107.4532 s`; accounted coverage `86.145%`,
+  `coverage=false`.
+- Full process wall: `688.2389 s` baseline to `677.5203 s` candidate
+  (`-1.56%`) in this single comparison.
+
+The 22-frame traffic reduction and exact media parity are PASS evidence for
+the candidate. This does not establish the PERF-004 `>=3x` VAE-wall gate:
+that gate is `NOT_RUN` pending a matched baseline profile and >=95% accounting.
+The 124-frame `<40 GiB` target, matched cold-plus-three-warm A/B and
+profiling-disabled overhead remain `NOT_RUN`; the candidate's PERF-001
+95%-accounting gate is `NOT_MET`. The next optimization target is the measured
+compute-wait `59.767 s`, file-read `28.570 s` and eviction `9.689 s` buckets.
+
 ## Repo-owned ComfyUI smoke driver
 
 `scripts/perf002_comfy_trace.py` is the ComfyUI-side `argv[1]` driver for the

@@ -43,6 +43,7 @@ ALLOWED_ENVIRONMENT = {
     "H3_PROFILE_JSON_DIR", "PYTHONIOENCODING", "PYTHONUTF8",
     "H3CSPEED_PERF002_ATTENTION_TRACE", "H3CSPEED_PERF002_SCHEDULER_TRACE",
     "H3CSPEED_TEXT_EMBEDDING", "H3CSPEED_TEXT_ENCODER_SHA256", "H3_FFMPEG",
+    "H3_VAE_LAYER_MAJOR",
 }
 BASE_ENVIRONMENT = {
     "APPDATA", "COMSPEC", "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA",
@@ -559,6 +560,11 @@ def _validate_h3_command(config: dict[str, Any], manifest: dict[str, Any],
         raise ContractError("h3cspeed algorithm-parity smoke requires H3_CUDA_TF32=0")
     if environment.get("H3_CUDA_ATTENTION") != "sage":
         raise ContractError("h3cspeed algorithm-parity smoke requires Sage attention")
+    layer_major = environment.get("H3_VAE_LAYER_MAJOR")
+    if layer_major not in (None, "1"):
+        raise ContractError("H3_VAE_LAYER_MAJOR must be absent or exactly 1")
+    if layer_major == "1" and environment.get("H3_PROFILE") != "1":
+        raise ContractError("layer-major smoke evidence requires H3_PROFILE=1")
     engine_bindings = _mapping(
         _mapping(_mapping(config.get("bindings"), "bindings").get("engines"),
                  "bindings.engines").get("h3cspeed"),
@@ -597,6 +603,9 @@ def _validate_command(config: dict[str, Any], manifest: dict[str, Any],
                       engine: str) -> list[str]:
     if config.get("schema_version") != SCHEMA_VERSION or config.get("engine") != engine:
         raise ContractError("private command config does not match this engine")
+    requested_environment = _mapping(config.get("environment"), "environment")
+    if engine != "h3cspeed" and "H3_VAE_LAYER_MAJOR" in requested_environment:
+        raise ContractError("H3_VAE_LAYER_MAJOR is valid only for h3cspeed")
     argv = config.get("argv")
     if (not isinstance(argv, list) or not argv or
             not all(isinstance(item, str) and item and "\x00" not in item for item in argv)):
@@ -836,6 +845,48 @@ def _attention_evidence(path: Path, engine: str) -> dict[str, Any]:
             "unexpected_fallbacks": 0, "trace_sha256": sha256_file(path)}
 
 
+def _h3_layer_major_evidence(path: Path) -> dict[str, Any]:
+    with path.open("rb") as stream:
+        payload = stream.read(16 * 1024 * 1024 + 1)
+    if len(payload) > 16 * 1024 * 1024:
+        raise ContractError("private h3cspeed log is too large to validate")
+    text = payload.decode("utf-8", errors="replace")
+    markers = re.findall(
+        r"h3: layer-major video VAE (\d+) chunks x (\d+) tiles "
+        r"\((\d+) states, (\d+) KiB hidden each\)", text)
+    if len(markers) != 1 or markers[0] != ("1", "8", "8", "16224"):
+        raise ContractError("layer-major video VAE runtime marker is missing or invalid")
+    summaries = [line for line in text.splitlines()
+                 if line.startswith("h3cspeed CUDA [video VAE decoder]:")]
+    if len(summaries) != 1:
+        raise ContractError("video VAE CUDA summary is missing or ambiguous")
+    summary = summaries[0]
+    peak = re.search(r"\bpeak=([0-9]+(?:\.[0-9]+)?) MiB\b", summary)
+    uploads = re.search(r"\buploads=(\d+)/([0-9]+(?:\.[0-9]+)?) GiB\b", summary)
+    dispatches = re.search(r"\blinear=(\d+) conv=(\d+) sdpa=(\d+)\b", summary)
+    if not peak or not uploads or not dispatches:
+        raise ContractError("video VAE CUDA summary fields are invalid")
+    upload_operations = int(uploads.group(1))
+    upload_gib = float(uploads.group(2))
+    dispatch_counts = tuple(int(dispatches.group(index)) for index in range(1, 4))
+    if (not math.isfinite(upload_gib) or upload_gib <= 0 or upload_gib > 14.45 or
+            upload_operations <= 0 or upload_operations > 1000):
+        raise ContractError("layer-major video VAE upload traffic misses the 80% reduction gate")
+    if dispatch_counts != (1176, 0, 288):
+        raise ContractError("layer-major video VAE dispatch counts are invalid")
+    return {
+        "video_vae_traversal": "layer_major",
+        "chunks": int(markers[0][0]), "tiles": int(markers[0][1]),
+        "states": int(markers[0][2]),
+        "hidden_kib_each": int(markers[0][3]),
+        "device_peak_mib": float(peak.group(1)),
+        "upload_operations": upload_operations, "upload_gib": upload_gib,
+        "linear_dispatches": dispatch_counts[0],
+        "conv_dispatches": dispatch_counts[1],
+        "sdpa_dispatches": dispatch_counts[2],
+    }
+
+
 def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
               ffmpeg: str, ffprobe: str, timeout_seconds: int) -> Path:
     if not 1 <= timeout_seconds <= 14400:
@@ -934,6 +985,9 @@ def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
     after = verify_bound_inputs(manifest, config, engine)
     if before != after:
         raise ContractError("bound inputs changed while the smoke was running")
+    optimization = None
+    if engine == "h3cspeed" and environment.get("H3_VAE_LAYER_MAJOR") == "1":
+        optimization = _h3_layer_major_evidence(log)
     result = {
         "schema_version": SCHEMA_VERSION, "kind": KIND,
         "input_manifest_sha256": manifest_digest, "engine": engine,
@@ -947,6 +1001,8 @@ def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
         "media": media_evidence, "status": "SMOKE_PASS",
         "matched_ab_status": "NOT_RUN",
     }
+    if optimization is not None:
+        result["optimization_evidence"] = optimization
     destination = output / f"{engine}-smoke-result.json"
     publish_json(destination, result)
     return destination

@@ -94,6 +94,8 @@ if not sidecar.is_file(): raise SystemExit('sidecar missing')
 qwen = model_root / 'FL2VA/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'
 if hashlib.sha256(qwen.read_bytes()).hexdigest() != os.environ['H3CSPEED_TEXT_ENCODER_SHA256']:
     raise SystemExit('qwen hash mismatch')
+if os.environ.get('H3_VAE_LAYER_MAJOR') not in (None, '1'):
+    raise SystemExit('invalid layer-major selection')
 ffmpeg = os.environ['H3_FFMPEG']
 command = [ffmpeg, '-v', 'error', '-y', '-f', 'lavfi', '-i',
  'testsrc2=size=864x480:rate=24', '-f', 'lavfi', '-i',
@@ -111,6 +113,12 @@ with open(os.environ['H3CSPEED_PERF002_ATTENTION_TRACE'], 'w', encoding='utf-8')
  json.dump({'schema_version':1,'engine':'h3cspeed','requested':'sage',
  'selected':'sage','scope':'dit_bf16','backend_hits':4,
  'expected_native_calls':2,'unexpected_fallbacks':0}, f)
+if os.environ.get('H3_VAE_LAYER_MAJOR') == '1':
+ print('h3: layer-major video VAE 1 chunks x 8 tiles (8 states, 16224 KiB hidden each)',
+       file=sys.stderr)
+ print('h3cspeed CUDA [video VAE decoder]: device-live=0.00 MiB peak=2036.43 MiB '
+       'resident-weights=0.00 MiB uploads=441/9.03 GiB linear=1176 conv=0 sdpa=288',
+       file=sys.stderr)
 """, encoding="utf-8")
 
 
@@ -401,6 +409,10 @@ class Perf002SmokeTests(unittest.TestCase):
             bad_reference["argv"][reference_index] = str(alternate_reference)
             with self.assertRaisesRegex(smoke.ContractError, "reference PNG"):
                 smoke._validate_command(bad_reference, manifest, "comfyui")
+            bad_environment = copy.deepcopy(config)
+            bad_environment["environment"]["H3_VAE_LAYER_MAJOR"] = "1"
+            with self.assertRaisesRegex(smoke.ContractError, "only for h3cspeed"):
+                smoke._validate_command(bad_environment, manifest, "comfyui")
             result_path = smoke.run_smoke(
                 manifest_path, config_path, evidence_dir,
                 shutil.which("ffmpeg") or "ffmpeg",
@@ -467,6 +479,8 @@ class Perf002SmokeTests(unittest.TestCase):
                     "PYTHONUTF8": "1",
                     "H3_CUDA_ATTENTION": "sage",
                     "H3_CUDA_TF32": "0",
+                    "H3_PROFILE": "1",
+                    "H3_VAE_LAYER_MAJOR": "1",
                     "H3_FFMPEG": config["bindings"]["engines"]["h3cspeed"]["ffmpeg"],
                     "H3CSPEED_TEXT_EMBEDDING": sidecar,
                     "H3CSPEED_TEXT_ENCODER_SHA256": qwen_hash,
@@ -495,6 +509,43 @@ class Perf002SmokeTests(unittest.TestCase):
             self.assertEqual(result["status"], "SMOKE_PASS")
             self.assertEqual(result["engine"], "h3cspeed")
             self.assertEqual(result["matched_ab_status"], "NOT_RUN")
+            self.assertEqual(
+                result["optimization_evidence"]["video_vae_traversal"],
+                "layer_major")
+            self.assertEqual(result["optimization_evidence"]["upload_gib"], 9.03)
+            invalid_log = root / "invalid-layer-major.log"
+            invalid_log.write_text(
+                "h3: layer-major video VAE 1 chunks x 8 tiles "
+                "(8 states, 16224 KiB hidden each)\n"
+                "h3cspeed CUDA [video VAE decoder]: device-live=0.00 MiB "
+                "peak=2036.43 MiB uploads=3528/72.23 GiB "
+                "linear=1176 conv=0 sdpa=288\n",
+                encoding="utf-8")
+            with self.assertRaisesRegex(smoke.ContractError, "80% reduction"):
+                smoke._h3_layer_major_evidence(invalid_log)
+
+            baseline = copy.deepcopy(config)
+            baseline_media_dir = root / "h3-baseline-output"
+            baseline_evidence_dir = root / "h3-baseline-evidence"
+            baseline_media_dir.mkdir()
+            baseline_evidence_dir.mkdir()
+            baseline["output_media"] = str(baseline_media_dir / "smoke.mp4")
+            baseline["scheduler_trace"] = str(baseline_media_dir / "scheduler.json")
+            baseline["attention_trace"] = str(baseline_media_dir / "attention.json")
+            baseline["argv"][baseline["argv"].index("-o") + 1] = baseline["output_media"]
+            baseline["environment"].pop("H3_VAE_LAYER_MAJOR")
+            baseline["environment"]["H3CSPEED_PERF002_SCHEDULER_TRACE"] = baseline["scheduler_trace"]
+            baseline["environment"]["H3CSPEED_PERF002_ATTENTION_TRACE"] = baseline["attention_trace"]
+            baseline_path = root / "h3-baseline-command.json"
+            baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+            baseline_result_path = smoke.run_smoke(
+                manifest_path, baseline_path, baseline_evidence_dir,
+                shutil.which("ffmpeg") or "ffmpeg",
+                shutil.which("ffprobe") or "ffprobe", 60)
+            baseline_result = json.loads(
+                baseline_result_path.read_text(encoding="utf-8"))
+            self.assertEqual(baseline_result["status"], "SMOKE_PASS")
+            self.assertNotIn("optimization_evidence", baseline_result)
 
             def rejected(mutation, message: str) -> None:
                 bad = copy.deepcopy(config)
@@ -521,6 +572,10 @@ class Perf002SmokeTests(unittest.TestCase):
                 "manifest reference")
             rejected(lambda bad: bad["environment"].update(
                 {"H3_CUDA_TF32": "1"}), "TF32=0")
+            rejected(lambda bad: bad["environment"].update(
+                {"H3_VAE_LAYER_MAJOR": "0"}), "absent or exactly 1")
+            rejected(lambda bad: bad["environment"].pop("H3_PROFILE"),
+                     "requires H3_PROFILE=1")
             rejected(lambda bad: bad["environment"].update(
                 {"H3_FFMPEG": str(launcher)}), "manifest-bound ffmpeg")
             rejected(lambda bad: bad["argv"].insert(1, str(fake)),

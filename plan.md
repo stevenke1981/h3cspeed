@@ -167,10 +167,15 @@ Verification:
 Implementation status:
 
 - The opt-in F32 layer-major walking skeleton and same-latent parity harness are
-  implemented. The measured 22-frame 864x480 smoke was bit-exact and reduced
-  Video VAE uploads from 72.23 GiB to 9.03 GiB (87.5%).
-- The 124-frame `<40 GiB` traffic and `>=3x` wall-time gates remain pending;
-  `PERF-001` telemetry is required before those targets can be accepted.
+  implemented. The real 22-frame 864x480 candidate reduced Video VAE traffic
+  from 3,528 uploads / 72.23 GiB and 79.78 GiB evictions to 441 uploads /
+  9.03 GiB and 16.58 GiB evictions, with device peak changing from 1,909.68
+  MiB to 2,036.43 MiB. Its final media SHA was exactly unchanged from the
+  tile-major baseline, so the 22-frame traffic/media-parity gate is PASS.
+- Candidate VAE profile wall was 107.4532 s with only 86.145% accounted
+  coverage (`coverage=false`); the `>=3x` VAE-wall gate is therefore NOT_RUN,
+  not PASS. The 124-frame `<40 GiB` traffic gate and PERF-001 telemetry gates
+  remain pending.
 
 The model stores the Video VAE weights as F16, but the current loader expands
 them to approximately 9.2 GiB of F32 device-ready data. This makes a nominally
@@ -473,7 +478,7 @@ traffic counters and media QA evidence.
 | PERF-001 | Wall/I/O/H2D/wait profiler + JSON report | none | >=95% wall accounting, <2% disabled overhead |
 | PERF-002 | Reproducible ComfyUI/h3cspeed A/B manifest/driver | PERF-001 | 002A/B manifest/media + 002C isolated adapter and h3 runtime trace producer implemented; bound-host 22-frame smokes `SMOKE_PASS`; matched A/B `NOT_RUN` |
 | PERF-003 | F32 hidden-pool state-size spike + tile/layer parity harness | PERF-001 | ownership/memory model + same-latent 22-frame proof |
-| PERF-004 | Layer-major F32 VAE execution via verified overlay | PERF-003 | <40 GiB upload target, >=3x VAE wall speedup |
+| PERF-004 | Layer-major F32 VAE execution via verified overlay | PERF-003 | 22f traffic/media parity PASS; 124f <40 GiB and >=3x VAE wall `NOT_RUN` |
 | PERF-005 | Double-buffered async refill primitives | PERF-001 | event-safe focused overlap trace |
 | PERF-006 | DiT next-block prefetch schedule | PERF-005 | >=50% upload-wait reduction |
 | PERF-007 | Phase cache lifecycle + 8GB cache sweep | PERF-004/006 | no stale phase entries, ten-run stability |
@@ -497,24 +502,26 @@ traffic counters and media QA evidence.
 
 ## 11. Immediate next change
 
-Continue **PERF-002/PERF-004** from the real bound-host smoke baseline. The
-immutable manifest SHA is
+Continue **PERF-002/PERF-004** from the real bound-host smoke and layer-major
+candidate evidence. The immutable manifest SHA is
 `49bb685df675dcf265fe87c5b95fc6587c7a42e6737dad427325be8de3cdf264`.
-The isolated 864x480/22-frame/2-step h3cspeed smoke passed in 688.2388647 s
-with Sage hits 102/fallbacks 0; ComfyUI passed in 397.98855 s with Sage hits
-100/fallbacks 0. Both outputs passed H.264/AAC media QA, full decode and five
-frame visual inspection. These isolated wall times are not a fair speed
-ranking because startup, conditioning and cache behavior differ.
+The tile-major h3cspeed baseline was 688.2388647 s; the layer-major candidate
+was 677.5203 s (-1.56%) and produced the exact same media SHA. Video VAE
+traffic fell from 3,528 uploads / 72.23 GiB and 79.78 GiB evictions to 441
+uploads / 9.03 GiB and 16.58 GiB evictions; device peak rose from 1,909.68 MiB
+to 2,036.43 MiB. This proves the 22-frame traffic/media-parity win, but not a
+VAE wall-speedup claim: candidate VAE profile wall was 107.4532 s with only
+86.145% accounted coverage (`coverage=false`).
 
-The next bounded optimization is to analyze and reduce the h3cspeed Video VAE
-decoder's measured 72.23 GiB upload traffic (and its 116.592 s DiT/overall
-critical path accounting) while preserving same-latent numerical parity,
-BF16 boundaries, native tensor layout, and the shared low-VRAM budget. Re-run
-the focused 864x480/22-frame VAE traffic/parity gates after each change and
-record upload bytes, peak VRAM/RAM, wall time and full media evidence. In
-parallel, prepare the complete matched 864x480/124-frame/8-step matrix with
-one cold plus three warm trials per engine, complete runtime/source closure,
-and the PERF-001 95% wall-accounting plus disabled-overhead gates.
+The immediate next change is to run the matched tile-major baseline profile
+with the same profiling schema, then optimize the measured compute-wait
+59.767 s, file-read 28.570 s and eviction 9.689 s buckets while preserving
+same-latent numerical parity, BF16 boundaries, native tensor layout and the
+shared low-VRAM budget. Re-run the focused 864x480/22-frame traffic/parity
+gates after each change and record upload/eviction bytes, peak VRAM/RAM, wall
+time, accounting coverage and full media evidence. Then prepare the complete
+matched 864x480/124-frame/8-step matrix with one cold plus three warm trials
+per engine, including the 124-frame <40 GiB and PERF-001 95% gates.
 
 The h3cspeed producer records actual serving sigma arrays and `dit_bf16` Sage
 hit/expected-native/unexpected-fallback counters through opt-in, no-clobber
@@ -529,6 +536,7 @@ native-control comparison, matched A/B timing, and quality review remain
 pending. `expected_native_calls: 0` in the Comfy attention trace is an
 explicit no-control-run marker, not native-control evidence.
 
-The matched 124-frame/8-step cold-plus-three-warm A/B, PERF-001 95%
-critical-path coverage and disabled-overhead gate remain `NOT_RUN`; they must
-not be inferred from the isolated smoke `SMOKE_PASS` results.
+The matched 124-frame/8-step cold-plus-three-warm A/B and profiling-disabled
+overhead gate remain `NOT_RUN`. The candidate's PERF-001 critical-path
+accounting is `NOT_MET` at 86.145% (`coverage=false`), so none of these gates
+may be inferred from the isolated smoke or candidate media parity.
