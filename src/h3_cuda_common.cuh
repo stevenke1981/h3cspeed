@@ -23,6 +23,27 @@
 
 struct h3_gpu;
 
+/* Private, bounded refill timeline diagnostics.  This deliberately lives in
+ * the CUDA-private header rather than h3_gpu.h: the production profile schema
+ * and public ABI remain unchanged.  Entries are only armed when the exact
+ * opt-in H3_CUDA_REFILL_TRACE=1 is combined with async refill. */
+#define H3CSPEED_REFILL_TRACE_CAPACITY 64
+
+struct h3cspeed_refill_trace_entry {
+    uint64_t sequence;
+    uint64_t refill_id;
+    uint64_t reuse_after_sequence;
+    uint64_t chunk_index;
+    size_t bytes;
+    uint32_t slot;
+    uint32_t source_kind; /* 1=file-backed read, 2=RAM-backed memcpy */
+    uint64_t host_read_start_ns;
+    uint64_t host_read_end_ns;
+    cudaEvent_t h2d_start;
+    cudaEvent_t h2d_end;
+    int valid;
+};
+
 struct h3_gpu_tensor {
     h3_gpu *gpu;
     /* Device pointer. It is NULL while a read-only weight is offloaded. */
@@ -85,6 +106,14 @@ struct h3_gpu {
     cudaEvent_t staging_done[2];
     int staging_done_valid[2];
     int async_refill_enabled;
+    int refill_trace_requested;
+    int refill_trace_enabled;
+    int refill_trace_failed;
+    uint64_t refill_trace_next_sequence;
+    uint64_t refill_trace_next_refill_id;
+    uint64_t refill_trace_last_slot_sequence[2];
+    h3cspeed_refill_trace_entry refill_trace_entries[
+        H3CSPEED_REFILL_TRACE_CAPACITY];
     size_t device_live_bytes;
     size_t resident_weight_bytes;
     size_t host_cache_live_bytes;

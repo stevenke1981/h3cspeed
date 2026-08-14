@@ -36,6 +36,19 @@ static int async_refill_requested(void) {
     return value && strcmp(value, "1") == 0;
 }
 
+static int refill_trace_requested(void) {
+    const char *value = getenv("H3_CUDA_REFILL_TRACE");
+    return value && strcmp(value, "1") == 0;
+}
+
+static uint64_t refill_trace_now_ns(void) {
+    const double seconds = h3cspeed_profile_now_seconds();
+    if (!(seconds > 0.0)) return 0;
+    const double nanos = seconds * 1000000000.0;
+    if (nanos >= (double)UINT64_MAX) return UINT64_MAX;
+    return (uint64_t)nanos;
+}
+
 enum h3cspeed_profile_stream {
     H3CSPEED_PROFILE_STREAM_COMPUTE = 0,
     H3CSPEED_PROFILE_STREAM_UPLOAD = 1
@@ -135,6 +148,8 @@ static cudaError_t profiled_h2d_async(h3_gpu *gpu, void *destination,
 static int read_exact(h3_gpu *gpu, int descriptor, void *buffer, size_t bytes,
                       uint64_t offset, char *error, size_t error_size);
 static int convrot_group_valid(uint32_t group_size);
+static int refill_trace_init_locked(h3_gpu *gpu);
+static int async_refill_active(const h3_gpu *gpu);
 
 static void lru_remove_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
     if (!gpu || !tensor || !tensor->in_lru) return;
@@ -455,6 +470,7 @@ static int host_backing_allocate_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
 }
 
 static int staging_allocate_locked(h3_gpu *gpu) {
+    if (gpu->refill_trace_requested && gpu->refill_trace_failed) return 0;
     if (gpu->staging) return 1;
     size_t requested = (size_t)gpu->offload.staging_bytes;
     if (!requested) requested = 64u * 1024u * 1024u;
@@ -508,6 +524,13 @@ static int staging_allocate_locked(h3_gpu *gpu) {
             }
         }
     }
+    if (gpu->refill_trace_requested && async_refill_active(gpu) &&
+        !refill_trace_init_locked(gpu)) {
+        /* The caller will drain the upload stream before returning the
+         * failure.  Keep the explicit opt-in fail-closed rather than silently
+         * running a partially instrumented refill. */
+        return 0;
+    }
     return 1;
 }
 
@@ -515,6 +538,106 @@ static int async_refill_active(const h3_gpu *gpu) {
     return gpu && gpu->async_refill_enabled && gpu->staging_slot_bytes &&
            gpu->staging_slots[0] && gpu->staging_slots[1] &&
            gpu->staging_done[0] && gpu->staging_done[1];
+}
+
+static void refill_trace_destroy(h3_gpu *gpu) {
+    if (!gpu) return;
+    for (size_t index = 0; index < H3CSPEED_REFILL_TRACE_CAPACITY; index++) {
+        h3cspeed_refill_trace_entry *entry = &gpu->refill_trace_entries[index];
+        if (entry->h2d_start) {
+            (void)cudaEventDestroy(entry->h2d_start);
+            entry->h2d_start = nullptr;
+        }
+        if (entry->h2d_end) {
+            (void)cudaEventDestroy(entry->h2d_end);
+            entry->h2d_end = nullptr;
+        }
+        entry->valid = 0;
+    }
+    gpu->refill_trace_enabled = 0;
+}
+
+static int refill_trace_init_locked(h3_gpu *gpu) {
+    if (!gpu || !gpu->refill_trace_requested ||
+        !async_refill_active(gpu)) return 1;
+    if (gpu->refill_trace_enabled) return 1;
+    for (size_t index = 0; index < H3CSPEED_REFILL_TRACE_CAPACITY; index++) {
+        h3cspeed_refill_trace_entry *entry = &gpu->refill_trace_entries[index];
+        cudaError_t status = cudaEventCreate(&entry->h2d_start);
+        if (status == cudaSuccess)
+            status = cudaEventCreate(&entry->h2d_end);
+        if (status != cudaSuccess) {
+            (void)cudaGetLastError();
+            refill_trace_destroy(gpu);
+            gpu->refill_trace_failed = 1;
+            h3cspeed_set_error(gpu, "CUDA refill trace event creation",
+                               cudaGetErrorString(status));
+            return 0;
+        }
+    }
+    gpu->refill_trace_enabled = 1;
+    return 1;
+}
+
+static h3cspeed_refill_trace_entry *refill_trace_begin(
+        h3_gpu *gpu, uint64_t refill_id, size_t slot, uint64_t chunk_index,
+        uint32_t source_kind, size_t bytes) {
+    if (!gpu || !gpu->refill_trace_enabled || slot >= 2) return nullptr;
+    const size_t index = (size_t)(gpu->refill_trace_next_sequence %
+                                  H3CSPEED_REFILL_TRACE_CAPACITY);
+    h3cspeed_refill_trace_entry *entry = &gpu->refill_trace_entries[index];
+    /* A bounded ring may eventually recycle an event pair.  Drain only the
+     * old pair at wrap-around so recording cannot race a prior DMA interval. */
+    if (entry->valid) {
+        cudaError_t status = cudaEventSynchronize(entry->h2d_end);
+        if (status != cudaSuccess) {
+            gpu->refill_trace_failed = 1;
+            h3cspeed_set_error(gpu, "CUDA refill trace event synchronize",
+                               cudaGetErrorString(status));
+            return nullptr;
+        }
+    }
+    const uint64_t sequence = ++gpu->refill_trace_next_sequence;
+    entry->sequence = sequence;
+    entry->refill_id = refill_id;
+    entry->reuse_after_sequence = gpu->refill_trace_last_slot_sequence[slot];
+    entry->chunk_index = chunk_index;
+    entry->bytes = bytes;
+    entry->slot = (uint32_t)slot;
+    entry->source_kind = source_kind;
+    entry->host_read_start_ns = refill_trace_now_ns();
+    entry->host_read_end_ns = 0;
+    entry->valid = 0;
+    gpu->refill_trace_last_slot_sequence[slot] = sequence;
+    return entry;
+}
+
+static int refill_trace_record_start(h3_gpu *gpu,
+                                      h3cspeed_refill_trace_entry *entry) {
+    if (!gpu || !entry || !gpu->refill_trace_enabled) return 1;
+    cudaError_t status = cudaEventRecord(entry->h2d_start,
+                                         gpu->upload_stream);
+    if (status != cudaSuccess) {
+        gpu->refill_trace_failed = 1;
+        h3cspeed_set_error(gpu, "CUDA refill trace H2D start",
+                           cudaGetErrorString(status));
+        return 0;
+    }
+    return 1;
+}
+
+static int refill_trace_record_end(h3_gpu *gpu,
+                                    h3cspeed_refill_trace_entry *entry) {
+    if (!gpu || !entry || !gpu->refill_trace_enabled) return 1;
+    cudaError_t status = cudaEventRecord(entry->h2d_end, gpu->upload_stream);
+    if (status != cudaSuccess) {
+        gpu->refill_trace_failed = 1;
+        h3cspeed_set_error(gpu, "CUDA refill trace H2D end",
+                           cudaGetErrorString(status));
+        return 0;
+    }
+    entry->valid = 1;
+    return 1;
 }
 
 static int drain_upload_stream(h3_gpu *gpu, const char *operation) {
@@ -544,6 +667,7 @@ static int staging_slot_record_locked(h3_gpu *gpu, size_t slot) {
 
 static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
     if (!gpu || !tensor || !tensor->data || !tensor->source_bytes) return 0;
+    uint64_t trace_refill_id = 0;
     if (tensor->host_data && tensor->host_valid)
         host_lru_append_locked(gpu, tensor);
     if (tensor->host_data && tensor->host_valid && tensor->host_pinned) {
@@ -558,9 +682,13 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
     } else {
         pthread_mutex_lock(&gpu->staging_lock);
         if (!staging_allocate_locked(gpu)) {
+            (void)drain_upload_stream(gpu,
+                                      "drain upload stream after refill trace failure");
             pthread_mutex_unlock(&gpu->staging_lock);
             return 0;
         }
+        if (gpu->refill_trace_enabled)
+            trace_refill_id = ++gpu->refill_trace_next_refill_id;
         int descriptor = -1;
         if (!tensor->host_data || !tensor->host_valid) {
             descriptor = open(tensor->source_path, O_RDONLY | O_CLOEXEC);
@@ -600,6 +728,14 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
                 gpu->staging_slot_bytes : gpu->staging_bytes;
             size_t chunk = std::min(tensor->source_bytes - done,
                                     staging_capacity);
+            h3cspeed_refill_trace_entry *trace_entry =
+                use_async_refill && gpu->refill_trace_enabled ?
+                refill_trace_begin(gpu, trace_refill_id, slot, chunk_index,
+                                   descriptor >= 0 ? 1u : 2u, chunk) : nullptr;
+            if (gpu->refill_trace_enabled && !trace_entry) {
+                ok = 0;
+                break;
+            }
             if (descriptor >= 0) {
                 char read_error[256] = {0};
                 if (!read_exact(gpu, descriptor, staging, chunk,
@@ -619,11 +755,14 @@ static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
                     profile_update(gpu, profile_pageable_copy, (uint64_t)chunk,
                                    h3cspeed_profile_now_seconds() - copy_started);
             }
-            if (!h3cspeed_cuda_ok(gpu,
-                profiled_h2d_async(
-                    gpu, static_cast<unsigned char *>(tensor->data) + done,
-                    staging, chunk, gpu->upload_stream),
-                "staged host weight upload") ||
+            if (trace_entry) trace_entry->host_read_end_ns = refill_trace_now_ns();
+            if ((trace_entry && !refill_trace_record_start(gpu, trace_entry)) ||
+                !h3cspeed_cuda_ok(gpu,
+                    profiled_h2d_async(
+                        gpu, static_cast<unsigned char *>(tensor->data) + done,
+                        staging, chunk, gpu->upload_stream),
+                    "staged host weight upload") ||
+                (trace_entry && !refill_trace_record_end(gpu, trace_entry)) ||
                 (use_async_refill && !staging_slot_record_locked(gpu, slot))) {
                 ok = 0;
                 break;
@@ -814,6 +953,7 @@ extern "C" h3_gpu *h3_gpu_create(const char *shader_source_path,
     pthread_mutex_init(&gpu->offload_lock, nullptr);
     pthread_mutex_init(&gpu->staging_lock, nullptr);
     gpu->async_refill_enabled = async_refill_requested();
+    gpu->refill_trace_requested = refill_trace_requested();
     const char *profile_json_dir = getenv("H3_PROFILE_JSON_DIR");
     gpu->profile_enabled = environment_flag_enabled("H3_PROFILE") ||
                            (profile_json_dir && *profile_json_dir);
@@ -1008,6 +1148,9 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
             gpu->stats.mps_sdpa_dispatches);
     }
     profile_write_final_report(gpu);
+    /* Both streams were synchronized above; only then is it safe to destroy
+     * timing events that may still be referenced by the upload stream. */
+    refill_trace_destroy(gpu);
     if (gpu->scratch) cudaFree(gpu->scratch);
     if (gpu->staging_done[0]) cudaEventDestroy(gpu->staging_done[0]);
     if (gpu->staging_done[1]) cudaEventDestroy(gpu->staging_done[1]);

@@ -45,6 +45,8 @@ an immediate allocation failure.
 - `H3_CUDA_STAGING_MIB=N`
 - `H3_CUDA_ASYNC_REFILL=1` opt in to two event-fenced refill slots inside the
   existing pinned staging allocation
+- `H3_CUDA_REFILL_TRACE=1` diagnostic-only, bounded private per-chunk host-read
+  and H2D timing for the async refill path
 - `H3_CUDA_RELEASE_SCRATCH=0|1`
 - `H3_CUDA_OFFLOAD_VERBOSE=1`
 - `H3_CUDA_DEVICE=N`
@@ -61,6 +63,15 @@ after all chunks have been enqueued. If pinned staging or either slot event is
 unavailable, the runtime keeps the original single-buffer synchronous path.
 This switch does not increase the configured staging allocation and does not by
 itself prove end-to-end DiT overlap or a video wall-time improvement.
+
+`H3_CUDA_REFILL_TRACE` is also exact-value opt-in and only becomes active when
+the two-slot path is active. It keeps at most 64 private entries, records no
+paths or tensor labels, and uses timing-enabled CUDA events immediately around
+each DMA enqueue. The host-read timestamps use a separate monotonic CPU clock;
+they establish ordering and nesting, not a cross-clock duration comparison.
+Because event creation and collection add diagnostic overhead, leave this flag
+unset outside focused validation. Trace allocation failure is fail-closed when
+the flag was explicitly requested.
 
 ## Machine-readable profile reports
 

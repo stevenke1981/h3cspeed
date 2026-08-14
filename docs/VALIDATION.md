@@ -42,6 +42,15 @@ every staging-slot boundary and tensor tail. CTest runs both the legacy
 synchronous path and `H3_CUDA_ASYNC_REFILL=1`; the two cases use unique fixture
 names so they are safe under parallel CTest. Generated-INT8 cycling remains a
 separate completion gate.
+
+The async case also sets `H3_CUDA_REFILL_TRACE=1`. After a warm-up refill it
+queues bounded compute kernels, refills a second 32 MiB file-backed tensor, and
+requires all 16 exact 2 MiB DMA intervals to be queryable. A PASS requires at
+least 0.05 ms of strict CUDA-event intersection between a DMA-only interval and
+the compute interval, a system-visible GPU-start handshake before prepare, an
+uncompleted compute end when prepare returns, ordered same-slot reuse, a
+host-read span nested in the compute window, and an unchanged full fixture
+size/hash. CPU read and CUDA event clocks are not subtracted from one another.
 Acceptance:
 
 - no use-after-free under Compute Sanitizer;
@@ -59,10 +68,12 @@ compute-sanitizer --tool memcheck ./build/test_cuda_offload
 compute-sanitizer --tool racecheck ./build/test_cuda_offload
 ```
 
-The focused file-backed test is necessary but not sufficient for PERF-005. A
-non-zero read/H2D/compute overlap trace, generated-INT8 repeated eviction,
-resident/offloaded model parity, and the fixed 22-frame upload-wait reduction
-must still be measured before the phase is marked complete.
+The focused file-backed test is necessary but not sufficient for PERF-005. It
+proves non-zero H2D/compute overlap and host-read ordering for this synthetic
+fixture, not an end-to-end model speedup. Generated-INT8 repeated eviction,
+pageable-allocation failure injection, resident/offloaded model parity, and the
+fixed 22-frame upload-wait reduction must still be measured before the phase is
+marked complete.
 
 ## Gate 3 — released operation fixtures
 

@@ -468,6 +468,7 @@ All values use MiB:
 | `H3_CUDA_PINNED_HOST_MIB` | `128` | pinned host-copy cap, excluding staging |
 | `H3_CUDA_STAGING_MIB` | `64` | reusable RAM/file-to-GPU transfer window |
 | `H3_CUDA_ASYNC_REFILL` | unset | set exactly `1` to split pinned staging into two event-fenced refill slots |
+| `H3_CUDA_REFILL_TRACE` | unset | diagnostic only; with async refill, record a bounded private per-chunk read/H2D timeline |
 | `H3_CUDA_RELEASE_SCRATCH` | `1` | free reusable GPU scratch after submit |
 | `H3_CUDA_OFFLOAD_VERBOSE` | unset | print policy even when offload is disabled |
 

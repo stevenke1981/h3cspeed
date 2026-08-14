@@ -214,10 +214,20 @@
   same 192 MiB and peaked at 128 MiB device memory. Their single-run context
   walls were 0.2198 s and 0.1977 s; this is diagnostic evidence, not a stable
   speed claim. PERF-005 therefore has an event-safe, opt-in refill primitive
-  and focused file-backed stress PASS, while Nsight/equivalent non-zero
-  read/H2D/compute overlap, pageable-allocation failure injection,
-  generated-INT8 cycling, matched 22-frame upload-wait reduction and the
-  124-frame target remain `NOT_RUN`.
+  and focused file-backed stress PASS.
+- The bounded PERF-005 refill timeline then instrumented each actual
+  `cudaMemcpyAsync` with timing-enabled events after a warm-up refill. On the
+  same RTX 3070 Ti, the latest native run measured 16 exact 2 MiB DMA chunks,
+  0.332352 ms strict H2D/compute intersection, and 6.761300 ms total host-read
+  spans nested inside the still-active compute window. Full fixture size and
+  FNV-1a stayed unchanged; same-slot sequence fences, six uploads, two
+  evictions and six file fallbacks passed. The focused disabled/async CTest ran
+  in parallel and passed 2/2. Compute Sanitizer repeated the strict gate with
+  0.350098 ms overlap and memcheck 0 errors; racecheck measured 0.406176 ms and
+  reported 0 hazards, errors or warnings. This is a focused H2D/compute overlap
+  PASS, not a cross-clock CPU-read duration comparison or model speed claim.
+  Pageable-allocation failure injection, generated-INT8 cycling, matched
+  22-frame upload-wait reduction and the 124-frame target remain `NOT_RUN`.
 
 Observed low-VRAM policy on the acceptance machine:
 
