@@ -247,6 +247,10 @@ static int release_tensor_device_locked(h3_gpu *gpu, h3_gpu_tensor *tensor,
      * boundary. */
     if (!h3cspeed_cuda_ok(gpu, cudaFree(pointer), "cudaFree tensor")) return 0;
     tensor->data = nullptr;
+    pthread_mutex_lock(&tensor->lock);
+    tensor->ready_valid = 0;
+    tensor->last_use_valid = 0;
+    pthread_mutex_unlock(&tensor->lock);
     lru_remove_locked(gpu, tensor);
     if (tensor->offloadable) {
         gpu->resident_weight_bytes = gpu->resident_weight_bytes >= tensor->bytes ?
@@ -848,6 +852,131 @@ int h3cspeed_tensor_prepare(h3_gpu *gpu, h3_gpu_tensor *tensor) {
     return h3cspeed_cuda_ok(gpu,
         cudaStreamWaitEvent(gpu->compute_stream, ready, 0),
         "cudaStreamWaitEvent(weight ready)");
+}
+
+static int dit_prefetch_requested(void) {
+    const char *value = getenv("H3_CUDA_DIT_PREFETCH");
+    return value && strcmp(value, "1") == 0;
+}
+
+extern "C" int h3cspeed_cuda_reserve_prefetch_weight(
+        h3_gpu *gpu, h3_gpu_tensor *tensor) {
+    if (!gpu || !tensor || tensor->gpu != gpu) {
+        if (gpu) h3cspeed_set_error(gpu, "DiT weight prefetch reserve",
+                                    "invalid CUDA tensor");
+        return 0;
+    }
+    if (!dit_prefetch_requested() || !gpu->offload.enabled) return 1;
+
+    pthread_mutex_lock(&gpu->offload_lock);
+    if (!tensor->offloadable || !tensor->source_bytes ||
+        ((!tensor->host_data || !tensor->host_valid) &&
+         !tensor->source_path)) {
+        pthread_mutex_unlock(&gpu->offload_lock);
+        h3cspeed_set_error(
+            gpu, "DiT weight prefetch reserve",
+            "tensor has no valid RAM/file reconstruction source");
+        return 0;
+    }
+    if (tensor->pin_epoch == gpu->operation_epoch) {
+        pthread_mutex_unlock(&gpu->offload_lock);
+        h3cspeed_set_error(
+            gpu, "DiT weight prefetch reserve",
+            "future tensor is pinned by the current operation");
+        return 0;
+    }
+    if (tensor->data) {
+        lru_append_locked(gpu, tensor);
+        pthread_mutex_unlock(&gpu->offload_lock);
+        return 1;
+    }
+    if (!device_allocate_locked(gpu, &tensor->data, tensor->bytes, 1,
+                                tensor)) {
+        pthread_mutex_unlock(&gpu->offload_lock);
+        return 0;
+    }
+    pthread_mutex_lock(&tensor->lock);
+    tensor->ready_valid = 0;
+    tensor->last_use_valid = 0;
+    pthread_mutex_unlock(&tensor->lock);
+    /* Do not set pin_epoch: the scheduler has not consumed this future
+     * weight.  The later upload helper records the existing ready event. */
+    lru_append_locked(gpu, tensor);
+    pthread_mutex_unlock(&gpu->offload_lock);
+    return 1;
+}
+
+extern "C" int h3cspeed_cuda_prefetch_weight(h3_gpu *gpu,
+                                                h3_gpu_tensor *tensor) {
+    if (!gpu || !tensor || tensor->gpu != gpu) {
+        if (gpu) h3cspeed_set_error(gpu, "DiT weight prefetch",
+                                    "invalid CUDA tensor");
+        return 0;
+    }
+    /* Keep the existing synchronous path byte-for-byte opt-in.  The caller
+     * still fences its command chain after a disabled/no-offload no-op. */
+    if (!dit_prefetch_requested() || !gpu->offload.enabled) return 1;
+
+    pthread_mutex_lock(&gpu->offload_lock);
+    if (!tensor->offloadable || !tensor->source_bytes ||
+        ((!tensor->host_data || !tensor->host_valid) &&
+         !tensor->source_path)) {
+        pthread_mutex_unlock(&gpu->offload_lock);
+        h3cspeed_set_error(
+            gpu, "DiT weight prefetch",
+            "tensor has no device allocation or valid RAM/file offload source");
+        return 0;
+    }
+    if (tensor->data && tensor->pin_epoch == gpu->operation_epoch) {
+        pthread_mutex_unlock(&gpu->offload_lock);
+        h3cspeed_set_error(
+            gpu, "DiT weight prefetch",
+            "future tensor is pinned by the current operation");
+        return 0;
+    }
+
+    pthread_mutex_lock(&tensor->lock);
+    int ready_valid = tensor->ready_valid;
+    pthread_mutex_unlock(&tensor->lock);
+    if (tensor->data && ready_valid) {
+        lru_append_locked(gpu, tensor);
+        pthread_mutex_unlock(&gpu->offload_lock);
+        return 1;
+    }
+
+    /* A stream-slot refill normally releases its old allocation before this
+     * helper is called.  The event waits keep this helper safe for a direct
+     * caller as well: no host or device storage is overwritten while a prior
+     * upload or compute use is still in flight. */
+    if (tensor->data &&
+        (!tensor_event_synchronize(gpu, tensor, 0,
+                                   "wait for future weight upload") ||
+         !tensor_event_synchronize(gpu, tensor, 1,
+                                   "wait for future weight use"))) {
+        pthread_mutex_unlock(&gpu->offload_lock);
+        return 0;
+    }
+
+    if (!tensor->data) {
+        if (!device_allocate_locked(gpu, &tensor->data, tensor->bytes, 1,
+                                    tensor)) {
+            pthread_mutex_unlock(&gpu->offload_lock);
+            return 0;
+        }
+    }
+    if (!upload_weight_locked(gpu, tensor)) {
+        if (tensor->data)
+            (void)release_tensor_device_locked(
+                gpu, tensor, 0, 0,
+                H3CSPEED_PROFILE_EVICTION_ERROR_CLEANUP);
+        pthread_mutex_unlock(&gpu->offload_lock);
+        return 0;
+    }
+    /* Deliberately do not set pin_epoch: this is one-ahead future work and
+     * remains reclaimable until the next operation actually consumes it. */
+    lru_append_locked(gpu, tensor);
+    pthread_mutex_unlock(&gpu->offload_lock);
+    return 1;
 }
 
 void h3cspeed_operation_complete(h3_gpu *gpu) {

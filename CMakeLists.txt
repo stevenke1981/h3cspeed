@@ -352,6 +352,12 @@ if(H3CSPEED_ENABLE_TESTS)
     target_link_libraries(test_cuda_offload PRIVATE h3cspeed_core)
     set_target_properties(test_cuda_offload PROPERTIES
         LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    add_executable(test_cuda_dit_prefetch tests/test_cuda_dit_prefetch.cu)
+    target_include_directories(test_cuda_dit_prefetch PRIVATE
+        src "${H3CSPEED_H3_SOURCE_DIR}")
+    target_link_libraries(test_cuda_dit_prefetch PRIVATE h3cspeed_core)
+    set_target_properties(test_cuda_dit_prefetch PROPERTIES
+        LINKER_LANGUAGE CUDA CUDA_RESOLVE_DEVICE_SYMBOLS ON)
     add_executable(test_cuda_numeric_regression
         tests/test_cuda_numeric_regression.c)
     target_include_directories(test_cuda_numeric_regression PRIVATE
@@ -420,6 +426,8 @@ if(H3CSPEED_ENABLE_TESTS)
         target_compile_options(test_cuda_scale_add PRIVATE /W4 /WX /permissive-)
         target_compile_definitions(test_cuda_offload PRIVATE
             _CRT_SECURE_NO_WARNINGS)
+        target_compile_definitions(test_cuda_dit_prefetch PRIVATE
+            _CRT_SECURE_NO_WARNINGS)
         target_compile_definitions(test_cuda_numeric_regression PRIVATE
             _CRT_SECURE_NO_WARNINGS)
         target_compile_options(test_cuda_numeric_regression PRIVATE
@@ -481,6 +489,14 @@ if(H3CSPEED_ENABLE_TESTS)
     set_tests_properties(cuda_offload_async_refill PROPERTIES
         SKIP_RETURN_CODE 77
         ENVIRONMENT "H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=0;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=1;H3_CUDA_REFILL_TRACE=1")
+    add_test(NAME cuda_dit_prefetch_disabled COMMAND test_cuda_dit_prefetch)
+    set_tests_properties(cuda_dit_prefetch_disabled PROPERTIES
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "H3_CUDA_DIT_PREFETCH=0;H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=0;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=1;H3_CUDA_REFILL_TRACE=1")
+    add_test(NAME cuda_dit_prefetch_enabled COMMAND test_cuda_dit_prefetch)
+    set_tests_properties(cuda_dit_prefetch_enabled PROPERTIES
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "H3_CUDA_DIT_PREFETCH=1;H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=4;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=1;H3_CUDA_REFILL_TRACE=1")
     add_test(NAME cuda_numeric_regression COMMAND test_cuda_numeric_regression)
     set_tests_properties(cuda_numeric_regression PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME cuda_convrot_numeric COMMAND test_cuda_convrot_numeric)

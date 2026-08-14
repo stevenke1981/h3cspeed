@@ -47,6 +47,10 @@ an immediate allocation failure.
   existing pinned staging allocation
 - `H3_CUDA_REFILL_TRACE=1` diagnostic-only, bounded private per-chunk host-read
   and H2D timing for the async refill path
+- `H3_CUDA_DIT_PREFETCH=1` enables the private reserve/upload primitives used
+  by the focused PERF-006 fixture. The released DiT schedule does not call
+  these primitives yet; a future integration must keep reserved tensors
+  reclaimable until the next block actually consumes them.
 - `H3_CUDA_RELEASE_SCRATCH=0|1`
 - `H3_CUDA_OFFLOAD_VERBOSE=1`
 - `H3_CUDA_DEVICE=N`

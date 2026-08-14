@@ -75,6 +75,19 @@ pageable-allocation failure injection, resident/offloaded model parity, and the
 fixed 22-frame upload-wait reduction must still be measured before the phase is
 marked complete.
 
+PERF-006 adds `test_cuda_dit_prefetch` in two CTest variants. With
+`H3_CUDA_DIT_PREFETCH=1`, the fixture reserves future device storage before
+starting compute, then calls the private upload helper while a device-confirmed
+kernel is active. It measures every DMA interval and requires at least one
+strict CUDA-event intersection, checks that the future tensor is not pinned by
+the current epoch, preserves the full source-file hash plus every staging-chunk
+boundary, and evicts/reloads file-backed canaries. With
+`H3_CUDA_DIT_PREFETCH=0`, both helpers are no-ops and the existing lazy upload
+path remains responsible for the same canary. These are focused synthetic
+primitive proofs only: the released DiT block schedule does not call the
+helpers. The 22-frame exclusive upload-wait gate, generated-INT8/pageable
+failure gates, and real model/media parity remain `NOT_RUN`.
+
 ## Gate 3 — released operation fixtures
 
 Port the pinned upstream BF16, audio, DiT-block and VAE fixtures into CMake.

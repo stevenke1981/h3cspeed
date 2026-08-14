@@ -364,6 +364,30 @@ calling this an architecture-wide production release.
   real media/traces; full source and Python-environment closure, native
   control, and matched A/B timing remain `NOT RUN`.
 
+## PERF-006 private DiT prefetch primitive (2026-08-14)
+
+- Added private, opt-in reserve/upload helpers without changing the public
+  `h3_gpu.h` API. Reservation happens before the compute command chain and does
+  not set `pin_epoch`; upload uses the existing file-backed async-refill path,
+  ready event and weight LRU.
+- On the RTX 3070 Ti (sm_86), enabled/disabled focused CTest passed both
+  sequentially and in parallel. The enabled 512 MiB / 128 MiB weight-cache
+  fixture measured all 32 DMA intervals and required at least one non-zero
+  H2D/compute intersection (1/32 chunks, 130.244629 ms maximum in the final
+  native verbose run). It preserved the full FNV-1a source-file hash and every
+  staging-chunk boundary, then reached an exact pre-fault checkpoint of two
+  evictions and four authoritative file reloads with a 128 MiB peak device
+  footprint. The subsequent deleted-source failure fixture deliberately adds
+  one cleanup eviction to the final process summary.
+- Compute Sanitizer memcheck reported 0 errors with 18.606079 ms strict
+  overlap; racecheck reported 0 hazards/errors/warnings with 37.247070 ms
+  strict overlap.
+- This is a synthetic private-primitive gate, not a released model schedule.
+  Real DiT integration, generated-INT8 cycling, deterministic pageable failure,
+  the matched cold 864x480/22-frame exclusive upload-wait reduction, numerical
+  and media parity, a newer NVIDIA architecture, and the 124-frame run remain
+  `NOT_RUN` / `MANUAL_REQUIRED` as applicable.
+
 ## PERF-002C h3 direct-binary binding preflight (2026-08-14)
 
 - The h3 adapter now fail-closes unless the direct binary consumes the bound
