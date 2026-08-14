@@ -537,3 +537,18 @@ calling this an architecture-wide production release.
 - The real RTX 3070 Ti launcher path was exercised with that model root and
   `--help`: preflight ran before the binary, the CLI returned successfully, and
   no model inference or CUDA allocation was started.
+
+## Native loader metadata integration (2026-08-15)
+
+- The pinned C loader now reuses the safetensors headers opened by
+  `h3_weight_store_open()` to flatten the FL2VA transformer metadata and call
+  the same `h3cspeed_h3_model_config_detect()` contract used by the portable
+  detector. Payloads remain unmapped; malformed or incomplete transformer
+  metadata fails model loading, while a coherent but incompatible contract is
+  reported with its nonzero mask.
+- Native `h3cspeed --info` was rebuilt and exercised against the bound
+  `h3_fl2va_quantized/base` model root. It reported
+  `variant=adaln-curves` and
+  `compatibility=compatible (mask 0x0000000000000000)` after inventorying the
+  real 932-tensor FL2VA shard. No inference, weight mapping, or media render
+  was started by this check.

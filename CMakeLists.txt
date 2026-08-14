@@ -214,6 +214,8 @@ add_library(h3cspeed_core STATIC
     src/h3_offload_policy.c
     src/h3_profile.c
     src/h3_perf002_trace.c
+    src/h3_model_config.c
+    src/h3_model_compat.c
     $<$<PLATFORM_ID:Windows>:src/h3_windows_posix.c>
     ${H3CSPEED_CUDA_SOURCES}
 )

@@ -2,6 +2,7 @@
 #define H3_WEIGHTS_H
 
 #include "h3_gpu.h"
+#include "h3_model_config.h"
 #include "h3_safetensors.h"
 
 #include <stddef.h>
@@ -15,6 +16,14 @@ h3_weight_store *h3_weight_store_open(const char *directory,
                                       char *error, size_t error_size);
 void h3_weight_store_free(h3_weight_store *store);
 size_t h3_weight_store_shards(const h3_weight_store *store);
+
+/* Detect the native H3 transformer contract from the already-loaded
+ * safetensors headers.  No tensor payload is mapped or read. */
+int h3_weight_store_detect_h3(
+    const h3_weight_store *store, const char *prefix,
+    h3cspeed_h3_model_config *config,
+    h3cspeed_h3_compatibility *compatibility,
+    char *error, size_t error_size);
 
 const h3_st_tensor *h3_weight_find(const h3_weight_store *store,
                                    const char *name,

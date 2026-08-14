@@ -132,11 +132,18 @@ Portable suite 包含 Python safetensors inspector 測試與 C11 detector 測試
 
 本階段沒有修改 CUDA kernel、tensor layout、offload API、量化格式或數值路徑；GPU 數值、峰值 VRAM 與 sanitizer 驗證仍應在 NVIDIA 主機執行。
 
-## 後續對齊順序
+## 本階段完成與後續對齊順序
 
-1. 將 C detector 接到 pinned upstream `h3_weight_store_open()` 後的 header inventory，並在 `--info` 顯示 variant 與 compatibility。
-2. 導入 phase-aware weight lease，明確管理 token refiner、DiT block、final head 與 VAE 的權重生命週期，同時保留現有 CUDA ready/last-use event 安全規則。
-3. 以實際 graph shape 推導 runtime headroom，逐步取代部分固定 safety margin。
-4. 若未來加入第三種模型變體，新增明確 compatibility bit 與獨立執行路徑，
+本階段已將 C detector 接到 pinned upstream `h3_weight_store_open()` 的
+FL2VA header inventory。`h3_load_dir()` 會在不讀取 tensor payload 的情況下
+flatten 所有 transformer shard、偵測 H3 variant，並把 compatibility mask 傳給
+`--info`；metadata 不完整時 fail-closed，合法但不相容的架構則明確標示
+`incompatible`，不會被誤報為可執行。
+
+後續對齊順序：
+
+1. 導入 phase-aware weight lease，明確管理 token refiner、DiT block、final head 與 VAE 的權重生命週期，同時保留現有 CUDA ready/last-use event 安全規則。
+2. 以實際 graph shape 推導 runtime headroom，逐步取代部分固定 safety margin。
+3. 若未來加入第三種模型變體，新增明確 compatibility bit 與獨立執行路徑，
    不改寫既有 time-embedder/AdaLN 預設行為。
-5. 在 RTX 3070 Ti 8GB、RTX 3090 24GB 與另一張不同世代 NVIDIA GPU 驗證數值、VRAM、吞吐與 Compute Sanitizer。
+4. 在 RTX 3070 Ti 8GB、RTX 3090 24GB 與另一張不同世代 NVIDIA GPU 驗證數值、VRAM、吞吐與 Compute Sanitizer。

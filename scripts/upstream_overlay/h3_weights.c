@@ -127,6 +127,58 @@ size_t h3_weight_store_shards(const h3_weight_store *store) {
     return store ? store->count : 0;
 }
 
+int h3_weight_store_detect_h3(
+        const h3_weight_store *store, const char *prefix,
+        h3cspeed_h3_model_config *config,
+        h3cspeed_h3_compatibility *compatibility,
+        char *error, size_t error_size) {
+    if (error && error_size) error[0] = '\0';
+    if (compatibility) *compatibility = 0;
+    if (!store || !config) {
+        fail(error, error_size, "H3 model metadata output is required");
+        return 0;
+    }
+
+    size_t tensor_count = 0;
+    for (size_t index = 0; index < store->count; index++) {
+        size_t shard_count = store->headers[index].tensor_count;
+        if (shard_count > SIZE_MAX - tensor_count) {
+            fail(error, error_size, "H3 model metadata tensor count overflows");
+            return 0;
+        }
+        tensor_count += shard_count;
+    }
+    if (!tensor_count) {
+        fail(error, error_size, "H3 transformer contains no tensor metadata");
+        return 0;
+    }
+    h3cspeed_model_tensor_info *metadata = calloc(
+        tensor_count, sizeof(*metadata));
+    if (!metadata) {
+        fail(error, error_size, "out of memory flattening H3 tensor metadata");
+        return 0;
+    }
+    size_t cursor = 0;
+    for (size_t shard = 0; shard < store->count; shard++) {
+        const h3_st_header *header = &store->headers[shard];
+        for (size_t tensor = 0; tensor < header->tensor_count; tensor++) {
+            const h3_st_tensor *source = &header->tensors[tensor];
+            metadata[cursor].name = source->name;
+            metadata[cursor].ndim = source->ndim;
+            memcpy(metadata[cursor].shape, source->shape,
+                   sizeof(metadata[cursor].shape));
+            cursor++;
+        }
+    }
+    int ok = h3cspeed_h3_model_config_detect(
+        metadata, tensor_count, prefix ? prefix : "", config,
+        error, error_size);
+    if (ok && compatibility)
+        *compatibility = h3cspeed_h3_model_compatibility(config);
+    free(metadata);
+    return ok;
+}
+
 const h3_st_tensor *h3_weight_find(const h3_weight_store *store,
                                    const char *name,
                                    const h3_st_header **header) {

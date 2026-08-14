@@ -24,7 +24,7 @@ UPSTREAM_REPO = "antirez/h3.c"
 UPSTREAM_COMMIT = "8974cc055ea9c02fcd14cc27dfda3e1027c05153"
 ARCHIVE_URL = f"https://github.com/{UPSTREAM_REPO}/archive/{UPSTREAM_COMMIT}.zip"
 ARCHIVE_SHA256 = "dc6d3cd25cb70d5c723292e60f3f3b9093688a731467008a691d9a7412d3e8f3"
-PREPARED_TREE_SHA256 = "5b5255243dbe07205c7ae902ab84dd721a0d66de53c224ac2d57b6a780e130d6"
+PREPARED_TREE_SHA256 = "19abbb87913ef3f519fc311952161d84228e226afdcefaf8e96a55b6db4fc974"
 
 # Git blob SHA-1 values, not ordinary file hashes. They pin the exact interfaces
 # on which the CUDA overlay was developed.
@@ -58,15 +58,15 @@ EXPECTED_GIT_BLOBS = {
 # of the generated marker detects edited or stale prepared trees without a
 # network request on every configure.
 PREPARED_GIT_BLOBS: dict[str, str] = {
-    "h3.c": "f1da9b92465cf0bc8053b9aeae5d49f4d3c7a1a0",
-    "h3.h": "29640b37abaa056341cf5e827ecc9df501ca7c5c",
+    "h3.c": "32ffb5acdb30cf0a0b003a1c893cf7014954ed5d",
+    "h3.h": "e404a66261c40c958c32268e51059fbe35f2bd61",
     "h3_gpu.h": "7fb2871f0c7fca24c029fff80e1a135e06092a72",
     "h3_host.c": "6e875effe9dbe4294a3e35207806282decbad304",
     "h3_tokenizer.h": "e95e49b1d5149c445723d9552f6964917245a7de",
     "h3_tokenizer.m": "0d519fbd95c2728b2ab13a609695cfe311c626a7",
     "Makefile": "bb202379b4f30f997d9b168b6c0488cfe61d6946",
     "h3_safetensors.c": "2f1abd4202cbe854f0840c4db7acd2f2250ae46b",
-    "h3_weights.c": "a7321078b58e86bd87ad1f55192d818d81499bad",
+    "h3_weights.c": "1d34ccc2bc1e3da4f9572c27852a52100b6ed8aa",
     "h3_text_encoder.c": "1089f0395f69b11f2327785de3c7aef291e85df7",
     "h3_dit_schedule.c": "bbffd91d5615deebcc093d1c97c3392a043e5e0b",
     "h3_dit.c": "a143c341653471123ff47dfde4a881ec469f7a4c",
@@ -77,12 +77,12 @@ PREPARED_GIT_BLOBS: dict[str, str] = {
     "h3_terminal.c": "5b216e2e24ebf6468b80f4fd00332430240f16a3",
     "h3_vision_encoder.c": "8867231b3b88064ee01ee865ebaa30af53a5b5e3",
     "h3_multimodal.c": "f7b25455865b6fe937b0e2f08c72770e3d39e96d",
-    "main.c": "7f11e470a3c1a86a80f6f61fd5dffe67e8bbf621",
+    "main.c": "0cddf24fa18cf1c13a863c66affcc336b5e7b8d5",
     "h3_cli.c": "dddb2e655e2137e315762a96ba9db014a93c85a1",
     "linenoise.c": "2345b851b738d1106f5015b623a64a926a751216",
     "h3_metal.h": "c4fa79f06680c0d23012f4e500c46f1314561cb0",
     "h3_safetensors.h": "90335175f84b7d48349783c06fd044f0b4306981",
-    "h3_weights.h": "f73d3766797e1ee7c871a24225d2af273092ed14",
+    "h3_weights.h": "4927c9a0f16b7284c9450403411904295f2c87e0",
 }
 
 
@@ -748,6 +748,125 @@ def patch_quantized_loader(root: Path) -> None:
         shutil.copyfile(source, root / relative)
 
 
+def patch_model_metadata_info(root: Path) -> None:
+    """Expose the native H3 header detector through the pinned --info path."""
+    header = root / "h3.h"
+    text = header.read_text(encoding="utf-8")
+    old_model_info = (
+        "typedef struct {\n"
+        "    h3_component_info text_encoder;\n"
+        "    h3_component_info fl2va_transformer;\n"
+        "    h3_component_info ref2va_transformer;\n"
+        "    h3_component_info video_vae;\n"
+        "    h3_component_info audio_vae;\n"
+        "} h3_model_info;\n"
+    )
+    new_model_info = (
+        "typedef struct {\n"
+        "    h3_component_info text_encoder;\n"
+        "    h3_component_info fl2va_transformer;\n"
+        "    h3_component_info ref2va_transformer;\n"
+        "    h3_component_info video_vae;\n"
+        "    h3_component_info audio_vae;\n"
+        "    /* Header-only native H3 transformer contract detected at load time. */\n"
+        "    int fl2va_transformer_metadata_valid;\n"
+        "    int fl2va_transformer_compatible;\n"
+        "    uint64_t fl2va_transformer_compatibility;\n"
+        "    char fl2va_transformer_variant[32];\n"
+        "} h3_model_info;\n"
+    )
+    if new_model_info not in text:
+        if old_model_info not in text:
+            raise RuntimeError("unable to locate h3_model_info declaration")
+        text = text.replace(old_model_info, new_model_info, 1)
+    header.write_text(text, encoding="utf-8", newline="\n")
+
+    source = root / "h3.c"
+    text = source.read_text(encoding="utf-8")
+    include_marker = '#include "h3_safetensors.h"\n'
+    include = '#include "h3_weights.h"\n'
+    if include not in text:
+        if include_marker not in text:
+            raise RuntimeError("unable to locate h3.c safetensors include")
+        text = text.replace(include_marker, include_marker + include, 1)
+    helper_marker = (
+        "static int h3_inventory(h3_ctx *ctx, const char *relative,\n"
+        "                        h3_component_info *info) {\n"
+    )
+    helper_end = "    free(path);\n    return ok;\n}\n\n"
+    if "static int h3_detect_fl2va_transformer" not in text:
+        start = text.find(helper_marker)
+        if start < 0:
+            raise RuntimeError("unable to locate h3_inventory helper")
+        end = text.find(helper_end, start)
+        if end < 0:
+            raise RuntimeError("unable to locate h3_inventory helper end")
+        end += len(helper_end)
+        helper = (
+            "static int h3_detect_fl2va_transformer(h3_ctx *ctx) {\n"
+            "    char *path = h3_path(ctx->model_dir, \"FL2VA/transformer\");\n"
+            "    if (!path) {\n"
+            "        h3_set_error(ctx, \"out of memory resolving FL2VA transformer path\");\n"
+            "        return 0;\n"
+            "    }\n"
+            "    char detail[512];\n"
+            "    h3_weight_store *store = h3_weight_store_open(path, detail, sizeof(detail));\n"
+            "    free(path);\n"
+            "    if (!store) {\n"
+            "        h3_set_error(ctx, \"%s\", detail);\n"
+            "        return 0;\n"
+            "    }\n"
+            "    h3cspeed_h3_model_config config;\n"
+            "    h3cspeed_h3_compatibility compatibility = 0;\n"
+            "    int ok = h3_weight_store_detect_h3(\n"
+            "        store, \"\", &config, &compatibility, detail, sizeof(detail));\n"
+            "    h3_weight_store_free(store);\n"
+            "    if (!ok) {\n"
+            "        h3_set_error(ctx, \"invalid FL2VA transformer metadata: %s\", detail);\n"
+            "        return 0;\n"
+            "    }\n"
+            "    ctx->model.fl2va_transformer_metadata_valid = 1;\n"
+            "    ctx->model.fl2va_transformer_compatible = compatibility == 0;\n"
+            "    ctx->model.fl2va_transformer_compatibility = compatibility;\n"
+            "    snprintf(ctx->model.fl2va_transformer_variant,\n"
+            "             sizeof(ctx->model.fl2va_transformer_variant), \"%s\",\n"
+            "             h3cspeed_h3_variant_name(config.variant));\n"
+            "    return 1;\n"
+            "}\n\n"
+        )
+        text = text[:end] + helper + text[end:]
+    inventory_marker = (
+        "        !h3_inventory(ctx, \"FL2VA/transformer\", &ctx->model.fl2va_transformer) ||\n"
+    )
+    inventory_replacement = inventory_marker + "        !h3_detect_fl2va_transformer(ctx) ||\n"
+    if inventory_replacement not in text:
+        if inventory_marker not in text:
+            raise RuntimeError("unable to locate FL2VA inventory call")
+        text = text.replace(inventory_marker, inventory_replacement, 1)
+    source.write_text(text, encoding="utf-8", newline="\n")
+
+    main = root / "main.c"
+    text = main.read_text(encoding="utf-8")
+    marker = '    print_component("audio VAE", &model->audio_vae);\n'
+    replacement = marker + (
+        '    puts("H3 CUDA transformer contract (header-only):");\n'
+        '    if (!model->fl2va_transformer_metadata_valid) {\n'
+        '        puts("  metadata              unavailable");\n'
+        '    } else {\n'
+        '        printf("  variant               %s\\n",\n'
+        '               model->fl2va_transformer_variant);\n'
+        '        printf("  compatibility         %s (mask 0x%016" PRIu64 ")\\n",\n'
+        '               model->fl2va_transformer_compatible ? "compatible" : "incompatible",\n'
+        '               model->fl2va_transformer_compatibility);\n'
+        '    }\n'
+    )
+    if replacement not in text:
+        if marker not in text:
+            raise RuntimeError("unable to locate h3 --info component output")
+        text = text.replace(marker, replacement, 1)
+    main.write_text(text, encoding="utf-8", newline="\n")
+
+
 def patch_tree(root: Path) -> None:
     replace_host_resize(root / "h3_host.c")
     patch_cli_name(root)
@@ -760,6 +879,7 @@ def patch_tree(root: Path) -> None:
     patch_frame_anchor_allocation(root)
     patch_perf002_trace(root)
     patch_quantized_loader(root)
+    patch_model_metadata_info(root)
     patch_perf002_dit_trace(root)
     patch_c_linkage(root / "h3_gpu.h", "#include <stdint.h>\n\n")
     patch_c_linkage(root / "h3_metal.h", '#include "h3.h"\n\n')
