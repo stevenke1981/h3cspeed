@@ -34,6 +34,14 @@ int h3cspeed_cuda_prime_prefetch_weight(h3_gpu *gpu,
 void h3cspeed_cuda_cancel_prefetch_weight(h3_gpu *gpu,
                                           h3_gpu_tensor *tensor);
 
+/* PERF-006 private route/profiling hooks.  The released wrapper brackets only
+ * its GPU Euler denoise scope; no public h3_gpu.h ABI is changed. */
+void h3cspeed_cuda_profile_dit_scope_begin(h3_gpu *gpu, int ssd_streaming,
+                                            int one_ahead_convrot);
+void h3cspeed_cuda_profile_dit_scope_end(h3_gpu *gpu);
+void h3cspeed_cuda_profile_note_prefetch_error(h3_gpu *gpu);
+void h3cspeed_cuda_profile_note_prefetch_block(h3_gpu *gpu);
+
 #ifdef __cplusplus
 }
 #endif

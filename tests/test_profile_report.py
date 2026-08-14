@@ -41,6 +41,13 @@ class ProfileReportTests(unittest.TestCase):
             self.assertNotIn("E:\\", json.dumps(report))
             self.assertEqual(report["context"]["label"], "redacted")
             self.assertFalse(report["wall"]["coverage_gate_valid"])
+            perf006 = report["perf006"]
+            self.assertTrue(perf006["upload_wait_trace_requested"])
+            self.assertTrue(perf006["upload_wait_trace_complete"])
+            self.assertEqual(perf006["upload_ready_wait_count"], 4)
+            self.assertEqual(perf006["prefetch_block_count"], 2)
+            self.assertEqual(perf006["dit_prefetch_mode"], "one_ahead_convrot")
+            self.assertEqual(perf006["scope"], "dit_denoise")
 
     def test_nan_and_negative_values_fail_closed(self) -> None:
         base = self._minimal_report()

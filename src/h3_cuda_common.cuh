@@ -28,6 +28,11 @@ struct h3_gpu;
  * and public ABI remain unchanged.  Entries are only armed when the exact
  * opt-in H3_CUDA_REFILL_TRACE=1 is combined with async refill. */
 #define H3CSPEED_REFILL_TRACE_CAPACITY 64
+/* The real 22-frame/2-step DiT route can enqueue more than 1,300 distinct
+ * weight-ready waits between host synchronizations.  Events are initialized
+ * lazily only for the DiT context, so this bounded capacity does not burden
+ * the VAE contexts. */
+#define H3CSPEED_UPLOAD_WAIT_TRACE_CAPACITY 4096
 
 struct h3cspeed_refill_trace_entry {
     uint64_t sequence;
@@ -41,6 +46,12 @@ struct h3cspeed_refill_trace_entry {
     uint64_t host_read_end_ns;
     cudaEvent_t h2d_start;
     cudaEvent_t h2d_end;
+    int valid;
+};
+
+struct h3cspeed_upload_wait_trace_entry {
+    cudaEvent_t start;
+    cudaEvent_t end;
     int valid;
 };
 
@@ -110,6 +121,7 @@ struct h3_gpu {
     cudaEvent_t staging_done[2];
     int staging_done_valid[2];
     int async_refill_enabled;
+    int async_refill_requested;
     int refill_trace_requested;
     int refill_trace_enabled;
     int refill_trace_failed;
@@ -150,6 +162,27 @@ struct h3_gpu {
     struct timespec profile_wall;
     cudaEvent_t profile_start;
     cudaEvent_t profile_mark;
+    int upload_wait_trace_requested;
+    int upload_wait_trace_initialized;
+    int upload_wait_trace_complete;
+    int upload_wait_trace_overflow;
+    int upload_wait_trace_union_valid;
+    int profile_dit_scope_active;
+    int profile_dit_scope_seen;
+    int profile_dit_ssd_streaming;
+    size_t upload_wait_trace_count;
+    double upload_ready_wait_seconds;
+    uint64_t upload_ready_wait_count;
+    struct h3cspeed_upload_wait_trace_entry upload_wait_trace_entries[
+        H3CSPEED_UPLOAD_WAIT_TRACE_CAPACITY];
+    int dit_prefetch_requested;
+    char dit_prefetch_mode[32];
+    uint64_t prefetch_reserve_count;
+    uint64_t prefetch_upload_count;
+    uint64_t prefetch_consume_count;
+    uint64_t prefetch_cancel_count;
+    uint64_t prefetch_error_count;
+    uint64_t prefetch_block_count;
 };
 
 static inline size_t h3cspeed_dtype_size(h3_gpu_dtype dtype) {

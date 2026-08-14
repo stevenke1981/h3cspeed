@@ -431,9 +431,52 @@ calling this an architecture-wide production release.
   and separate full video/audio `ffmpeg -xerror` decodes passed. This proves
   released-route correctness and media parity, not a speedup.
 - A matched same-binary cold baseline/candidate pair and exclusive DiT
-  upload-wait reduction remain `NOT_RUN`. Generated-INT8 repeated cycling,
-  pageable failure injection, a newer NVIDIA architecture, and the
-  124-frame/8-step matrix remain `NOT_RUN` / `MANUAL_REQUIRED`.
+  upload-wait reduction were subsequently measured by the bounded PERF-006
+  pair below. Generated-INT8 repeated cycling, pageable failure injection, a
+  newer NVIDIA architecture, and the 124-frame/8-step matrix remain `NOT_RUN`
+  / `MANUAL_REQUIRED`.
+
+## PERF-006 matched upload-ready-wait A/B (2026-08-14)
+
+- Added opt-in `H3_CUDA_UPLOAD_WAIT_TRACE=1` instrumentation. It lazily creates
+  a bounded 4,096-entry CUDA-event ring only while the `dit_denoise` scope is
+  active and reports route metadata, completeness/overflow state, prefetch
+  counters, and the DiT-scoped upload-ready wait in the existing profile JSON.
+  Trace initialization failure and overflow are fail-closed. Other CUDA
+  contexts do not allocate the ring.
+- A same-binary 864x480, 22-frame, 2-step pair used native binary SHA-256
+  `971ADC25B840CACEA46173D6819B99B395AB2085E19F12C5E1B7C63C16A0C375`,
+  input-manifest SHA-256
+  `887CB005DC24311A018C69073AB32F448E0700A351443C49BC4CE7E64A1C7257`,
+  matched-contract SHA-256
+  `230D78787085DBF490A41FCDF500E8B3367EF9DBC907A08FB0EEDA58D1E87ABDA`,
+  RTX 3070 Ti (`sm_86`), driver 596.36, CUDA 13.2, Sage attention, TF32 off,
+  layer-major VAE, async refill on, no SSD streaming, and otherwise identical
+  model, sidecar, first frame, prompt, seed 42 and memory budgets. Each variant
+  ran in a fresh process/CUDA context; the Windows filesystem cache was not
+  flushed and is therefore declared possibly warm.
+- Baseline (`H3_CUDA_DIT_PREFETCH` absent) measured 0.917230380 s across 1,625
+  DiT upload-ready waits and 678.499696 s process wall. Candidate
+  (`H3_CUDA_DIT_PREFETCH=1`) measured 0.007519424 s across the same 1,625 waits
+  and 686.814827 s wall. The upload-ready-wait reduction is 99.1802%, exceeding
+  the 50% numerical threshold for this observed pair. Both traces were
+  complete, did not overflow, and
+  reported the expected disabled/one-ahead route. Baseline prefetch counters
+  were all zero; candidate recorded 98 blocks and 1,102 reserve, upload and
+  consume operations with zero cancellations or errors.
+- Both variants produced the exact same H.264/AAC media SHA-256
+  `54077780F5D45CFCD9D5B44B0FEA91CEA9C4FC15DCEECF31CD60D376C9795F5B`;
+  bound scheduler/attention evidence, 102 Sage hits, zero fallback, FFprobe and
+  full video/audio decode checks passed. Because Windows filesystem cache state
+  was not controlled or counterbalanced, the pair validator emitted the
+  deliberately provisional status `OBSERVED_WAIT_PASS`, not the formal plan
+  gate `PASS`.
+- This is observed upload-ready-wait evidence, not an end-to-end speedup or the
+  fixed cold-cache acceptance gate: candidate wall
+  was 8.315131 s slower (+1.2255%). A reverse-order counterbalanced pair is
+  still required to quantify cache/order variance and to attribute the new
+  reserve/upload, eviction, file-I/O and scheduling costs. The formal >=50%
+  cold-cache gate and 124-frame run remain `NOT_RUN` pending that analysis.
 
 ## PERF-002C h3 direct-binary binding preflight (2026-08-14)
 

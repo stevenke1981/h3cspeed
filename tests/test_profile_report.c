@@ -68,6 +68,23 @@ int main(int argc, char **argv) {
     report.linear_dispatches = 4;
     report.convolution_dispatches = 5;
     report.attention_dispatches = 6;
+    report.perf006.dit_prefetch_requested = 1;
+    report.perf006.dit_prefetch_mode = "one_ahead_convrot";
+    report.perf006.async_refill_requested = 1;
+    report.perf006.async_refill_active = 1;
+    report.perf006.ssd_streaming = 0;
+    report.perf006.upload_wait_trace_requested = 1;
+    report.perf006.upload_wait_trace_complete = 1;
+    report.perf006.upload_wait_trace_union_valid = 1;
+    report.perf006.scope = "dit_denoise";
+    report.perf006.upload_ready_wait_seconds = 0.125;
+    report.perf006.upload_ready_wait_count = 4;
+    report.perf006.prefetch_reserve_count = 5;
+    report.perf006.prefetch_upload_count = 4;
+    report.perf006.prefetch_consume_count = 3;
+    report.perf006.prefetch_cancel_count = 1;
+    report.perf006.prefetch_error_count = 0;
+    report.perf006.prefetch_block_count = 2;
 
     if (strcmp(h3cspeed_profile_safe_label(report.label), "redacted") != 0 ||
         strcmp(h3cspeed_profile_safe_label("H3 DiT"), "H3 DiT") != 0 ||

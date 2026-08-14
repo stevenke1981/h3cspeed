@@ -480,7 +480,7 @@ traffic counters and media QA evidence.
 | PERF-003 | F32 hidden-pool state-size spike + tile/layer parity harness | PERF-001 | ownership/memory model + same-latent 22-frame proof |
 | PERF-004 | Layer-major F32 VAE execution via verified overlay | PERF-003 | 22f traffic/media parity PASS; 124f <40 GiB and >=3x VAE wall `NOT_RUN` |
 | PERF-005 | Double-buffered async refill primitives | PERF-001 | opt-in two-slot/file-backed stress + strict H2D/compute timeline + sanitizer PASS; generated INT8 and 22f wall gates pending |
-| PERF-006 | DiT next-block prefetch schedule | PERF-005 | private primitive + released ConvRot integration + real 22f media parity PASS; matched >=50% exclusive upload-wait reduction `NOT_RUN` |
+| PERF-006 | DiT next-block prefetch schedule | PERF-005 | private primitive + released ConvRot integration + real 22f media parity PASS; observed same-binary wait reduction 99.18%; fixed cold-cache gate `NOT_RUN`; wall speedup NOT_MET |
 | PERF-007 | Phase cache lifecycle + 8GB cache sweep | PERF-004/006 | no stale phase entries, ten-run stability |
 | PERF-008 | Shape-specific kernel autotuning/fusion | PERF-004/006 | numeric/sanitizer/per-shape speed gate |
 | PERF-009 | Fixed arenas + CUDA Graph | PERF-007/008 | graph parity and dispatch reduction |
@@ -527,14 +527,23 @@ consumption, and always
 drains compute and upload streams on submit/failure. BF16 SSD streaming is
 unchanged and deferred. A direct real 864x480/22-frame candidate exercised all
 98 one-ahead transitions and produced a byte-identical oracle MP4, closing the
-released-route correctness and media-parity gate. The immediate next gate is a
-matched cold 864x480/22-frame baseline/candidate pair with the same binary and
-profile schema. Require at least 50% lower exclusive DiT upload-wait; the
-single candidate wall is not a speedup claim. Generated-INT8 cycling and
-pageable-allocation failure injection remain focused test debt. Only after
-these gates pass should the complete matched 864x480/124-frame/8-step matrix
-run with one cold plus three warm trials per engine, including the 124-frame
-<40 GiB and PERF-001 95% gates.
+released-route correctness and media-parity gate. A new DiT-scoped,
+fail-closed upload-ready trace then measured a same-binary 22-frame pair:
+baseline 0.917230380 s versus candidate 0.007519424 s, a 99.1802% reduction,
+with identical media SHA. This pair emitted `OBSERVED_WAIT_PASS`; it does not
+close the formal fixed cold-cache gate because Windows filesystem cache state
+was possibly warm and the order was baseline then candidate. Candidate wall
+was 686.814827 s versus 678.499696 s (+1.2255%), so an end-to-end speedup is
+`NOT_MET` and the formal >=50% gate remains `NOT_RUN`.
+
+The immediate next change is a reverse-order counterbalanced 22-frame pair and
+cost attribution for reserve/upload, eviction, file I/O and scheduling. Keep
+the same binary, immutable manifest, async-refill route and private trace; do
+not select the better order after the fact. Generated-INT8 cycling and
+pageable-allocation failure injection remain focused test debt. Only after the
+wall regression is explained or removed should the complete matched
+864x480/124-frame/8-step matrix run with one cold plus three warm trials per
+engine, including the 124-frame <40 GiB and PERF-001 95% gates.
 
 The h3cspeed producer records actual serving sigma arrays and `dit_bf16` Sage
 hit/expected-native/unexpected-fallback counters through opt-in, no-clobber

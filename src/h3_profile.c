@@ -75,6 +75,23 @@ int h3cspeed_profile_report_valid(const h3cspeed_profile_report *report) {
         report->sm_major < 0 || report->sm_minor < 0 ||
         !report->label || !finite_nonnegative(report->wall_seconds)) return 0;
     const h3cspeed_profile_metrics *metrics = &report->metrics;
+    const h3cspeed_profile_perf006 *perf006 = &report->perf006;
+    if ((perf006->dit_prefetch_requested != 0 &&
+         perf006->dit_prefetch_requested != 1) ||
+        (perf006->async_refill_requested != 0 &&
+         perf006->async_refill_requested != 1) ||
+        (perf006->async_refill_active != 0 &&
+         perf006->async_refill_active != 1) ||
+        (perf006->ssd_streaming != 0 && perf006->ssd_streaming != 1) ||
+        (perf006->upload_wait_trace_requested != 0 &&
+         perf006->upload_wait_trace_requested != 1) ||
+        (perf006->upload_wait_trace_complete != 0 &&
+         perf006->upload_wait_trace_complete != 1) ||
+        (perf006->upload_wait_trace_overflow != 0 &&
+         perf006->upload_wait_trace_overflow != 1) ||
+        (perf006->upload_wait_trace_union_valid != 0 &&
+         perf006->upload_wait_trace_union_valid != 1) ||
+        !finite_nonnegative(perf006->upload_ready_wait_seconds)) return 0;
     return finite_nonnegative(metrics->file_read_seconds) &&
            finite_nonnegative(metrics->pageable_copy_seconds) &&
            finite_nonnegative(metrics->h2d_enqueue_seconds) &&
@@ -84,6 +101,20 @@ int h3cspeed_profile_report_valid(const h3cspeed_profile_report *report) {
            finite_nonnegative(metrics->allocation_seconds) &&
            finite_nonnegative(metrics->eviction_seconds) &&
            finite_nonnegative(metrics->compute_device_seconds);
+}
+
+static const char *safe_prefetch_mode(const char *mode) {
+    if (mode && strcmp(mode, "one_ahead_convrot") == 0)
+        return "\"one_ahead_convrot\"";
+    return "\"disabled\"";
+}
+
+static const char *safe_perf006_scope(const char *scope) {
+    if (scope && strcmp(scope, "dit_denoise") == 0)
+        return "\"dit_denoise\"";
+    if (scope && strcmp(scope, "GPU Euler denoise") == 0)
+        return "\"GPU Euler denoise\"";
+    return "\"none\"";
 }
 
 const char *h3cspeed_profile_safe_label(const char *label) {
@@ -195,6 +226,23 @@ static int write_json(FILE *stream, const h3cspeed_profile_report *report) {
         ", \"file_fallback_reads\": %" PRIu64 ", \"file_fallback_bytes\": %" PRIu64 "},\n"
         "  \"dispatches\": {\"direct\": %" PRIu64 ", \"linear\": %" PRIu64
         ", \"convolution\": %" PRIu64 ", \"attention\": %" PRIu64 "},\n"
+        "  \"perf006\": {\"dit_prefetch_requested\": %s, "
+        "\"dit_prefetch_mode\": %s, \"async_refill_requested\": %s, "
+        "\"async_refill_active\": %s, \"ssd_streaming\": %s, "
+        "\"upload_wait_trace_requested\": %s, "
+        "\"upload_wait_trace_complete\": %s, "
+        "\"upload_wait_trace_overflow\": %s, "
+        "\"upload_wait_trace_union_valid\": %s, \"scope\": %s, "
+        "\"upload_wait_trace_scope\": %s, "
+        "\"upload_ready_wait_seconds\": %.9f, "
+        "\"exclusive_upload_ready_wait_seconds\": %.9f, "
+        "\"upload_ready_wait_count\": %" PRIu64 ", \"wait_count\": %" PRIu64 ", "
+        "\"prefetch_reserve_count\": %" PRIu64 ", "
+        "\"prefetch_upload_count\": %" PRIu64 ", "
+        "\"prefetch_consume_count\": %" PRIu64 ", "
+        "\"prefetch_cancel_count\": %" PRIu64 ", "
+        "\"prefetch_error_count\": %" PRIu64 ", "
+        "\"prefetch_block_count\": %" PRIu64 "},\n"
         "  \"validity\": {\"h2d_device_seconds\": false, "
         "\"compute_device_seconds\": %s, \"critical_path_scope\": "
         "\"gpu_context_host_operations\"},\n"
@@ -222,6 +270,27 @@ static int write_json(FILE *stream, const h3cspeed_profile_report *report) {
         report->file_fallback_bytes, report->direct_dispatches,
         report->linear_dispatches, report->convolution_dispatches,
         report->attention_dispatches,
+        report->perf006.dit_prefetch_requested ? "true" : "false",
+        safe_prefetch_mode(report->perf006.dit_prefetch_mode),
+        report->perf006.async_refill_requested ? "true" : "false",
+        report->perf006.async_refill_active ? "true" : "false",
+        report->perf006.ssd_streaming ? "true" : "false",
+        report->perf006.upload_wait_trace_requested ? "true" : "false",
+        report->perf006.upload_wait_trace_complete ? "true" : "false",
+        report->perf006.upload_wait_trace_overflow ? "true" : "false",
+        report->perf006.upload_wait_trace_union_valid ? "true" : "false",
+        safe_perf006_scope(report->perf006.scope),
+        safe_perf006_scope(report->perf006.scope),
+        report->perf006.upload_ready_wait_seconds,
+        report->perf006.upload_ready_wait_seconds,
+        report->perf006.upload_ready_wait_count,
+        report->perf006.upload_ready_wait_count,
+        report->perf006.prefetch_reserve_count,
+        report->perf006.prefetch_upload_count,
+        report->perf006.prefetch_consume_count,
+        report->perf006.prefetch_cancel_count,
+        report->perf006.prefetch_error_count,
+        report->perf006.prefetch_block_count,
         m->compute_device_seconds > 0.0 ? "true" : "false") < 0) return 0;
     return !ferror(stream);
 }

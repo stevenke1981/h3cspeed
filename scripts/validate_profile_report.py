@@ -35,6 +35,54 @@ def _nonnegative_integer(value: Any, name: str) -> int:
     return value
 
 
+def _validate_perf006(root: dict[str, Any]) -> None:
+    """Validate additive PERF-006 route evidence when present."""
+    if "perf006" not in root:
+        return
+    perf = _mapping(root["perf006"], "perf006")
+    for key in (
+        "dit_prefetch_requested",
+        "async_refill_requested",
+        "async_refill_active",
+        "ssd_streaming",
+        "upload_wait_trace_requested",
+        "upload_wait_trace_complete",
+        "upload_wait_trace_overflow",
+        "upload_wait_trace_union_valid",
+    ):
+        if not isinstance(perf.get(key), bool):
+            raise ValueError(f"perf006.{key} must be boolean")
+    mode = perf.get("dit_prefetch_mode")
+    if mode not in ("disabled", "one_ahead_convrot"):
+        raise ValueError("perf006.dit_prefetch_mode is invalid")
+    scope = perf.get("scope")
+    if not isinstance(scope, str) or not scope:
+        raise ValueError("perf006.scope must be a non-empty string")
+    for key in ("upload_ready_wait_seconds", "exclusive_upload_ready_wait_seconds"):
+        if key in perf:
+            _nonnegative_number(perf[key], f"perf006.{key}")
+    if "upload_ready_wait_seconds" in perf and "exclusive_upload_ready_wait_seconds" in perf:
+        if not math.isclose(
+            float(perf["upload_ready_wait_seconds"]),
+            float(perf["exclusive_upload_ready_wait_seconds"]),
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("perf006 wait aliases are inconsistent")
+    for key in (
+        "upload_ready_wait_count",
+        "wait_count",
+        "prefetch_reserve_count",
+        "prefetch_upload_count",
+        "prefetch_consume_count",
+        "prefetch_cancel_count",
+        "prefetch_error_count",
+        "prefetch_block_count",
+    ):
+        if key in perf:
+            _nonnegative_integer(perf[key], f"perf006.{key}")
+
+
 def validate_report(report: Any) -> dict[str, Any]:
     root = _mapping(report, "report")
     if root.get("schema_version") != SCHEMA_VERSION:
@@ -132,6 +180,7 @@ def validate_report(report: Any) -> dict[str, Any]:
         raise ValueError("non_additive must be a list of strings")
     if "device_and_host_timings_may_overlap" not in non_additive:
         raise ValueError("overlap disclosure is required")
+    _validate_perf006(root)
     return root
 
 

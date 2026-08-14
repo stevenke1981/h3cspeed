@@ -41,6 +41,7 @@ COMMON_SCRIPTS = (
     "scripts/run_perf002_smoke.py",
     "scripts/perf002_comfy_trace.py",
     "scripts/validate_perf002_manifest.py",
+    "scripts/validate_perf006_ab.py",
 )
 COMMON_PROFILES = (
     "profiles/rtx3070ti-8gb.env",

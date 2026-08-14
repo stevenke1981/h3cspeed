@@ -91,8 +91,33 @@ Reserved batch members cannot evict one another. A direct released-schedule
 864x480/22-frame/2-step ConvRot run completed all 98 one-ahead transitions and
 produced a byte-identical oracle MP4, so released-route correctness and media
 parity are established. The focused fixture remains the strict event/ownership
-proof. The matched cold 22-frame exclusive upload-wait gate and the
-generated-INT8/pageable failure gates remain `NOT_RUN`.
+  proof. A same-binary 22-frame pair with async refill enabled and no SSD
+  streaming measured 0.917230380 s baseline versus 0.007519424 s candidate
+  DiT upload-ready wait (99.1802% lower) with byte-identical media. The
+  validator reports `OBSERVED_WAIT_PASS`; this does not close the formal
+  fixed cold-cache gate because Windows filesystem cache was possibly warm and
+  the order was baseline then candidate. Candidate process wall was 1.2255%
+  slower, so the result is not an end-to-end speedup. A reverse-order
+  counterbalanced pair, the formal cold-cache gate, and the generated-INT8 /
+  pageable failure gates remain `NOT_RUN`.
+
+For a PERF-006 pair, both smoke results must contain complete, non-overflowed
+`dit_denoise` wait traces, the same binary/manifest/matched-contract hashes,
+the expected disabled/one-ahead route, async refill active, no SSD streaming,
+and identical scheduler, attention and media hashes. Validate the sanitized
+results with:
+
+```bash
+python3 scripts/validate_perf006_ab.py \
+  --baseline-result /private/baseline/h3cspeed-smoke-result.json \
+  --candidate-result /private/candidate/h3cspeed-smoke-result.json \
+  --output /private/perf006-pair.json
+```
+
+The validator returns `OBSERVED_WAIT_PASS` only when the baseline wait is
+non-zero and the candidate is at most 50% of it. It reports process wall
+separately, does not claim controlled cold-cache status, and never infers a
+wall-speedup from the observed wait reduction.
 
 ## Gate 3 — released operation fixtures
 

@@ -41,6 +41,8 @@ static int refill_trace_requested(void) {
     return value && strcmp(value, "1") == 0;
 }
 
+static int dit_prefetch_requested(void);
+
 static uint64_t refill_trace_now_ns(void) {
     const double seconds = h3cspeed_profile_now_seconds();
     if (!(seconds > 0.0)) return 0;
@@ -143,6 +145,200 @@ static cudaError_t profiled_h2d_async(h3_gpu *gpu, void *destination,
     profile_update(gpu, profile_h2d_enqueue, (uint64_t)bytes,
                    h3cspeed_profile_now_seconds() - started);
     return status;
+}
+
+static void upload_wait_trace_mark_failed(h3_gpu *gpu, const char *operation) {
+    if (!gpu) return;
+    pthread_mutex_lock(&gpu->lock);
+    gpu->upload_wait_trace_complete = 0;
+    gpu->upload_wait_trace_union_valid = 0;
+    pthread_mutex_unlock(&gpu->lock);
+    if (operation) h3cspeed_set_error(gpu, operation, "PERF-006 trace failure");
+}
+
+static void upload_wait_trace_clear_events(h3_gpu *gpu) {
+    if (!gpu) return;
+    for (size_t index = 0; index < H3CSPEED_UPLOAD_WAIT_TRACE_CAPACITY;
+         index++) {
+        h3cspeed_upload_wait_trace_entry *entry =
+            &gpu->upload_wait_trace_entries[index];
+        if (entry->start) (void)cudaEventDestroy(entry->start);
+        if (entry->end) (void)cudaEventDestroy(entry->end);
+        entry->start = nullptr;
+        entry->end = nullptr;
+        entry->valid = 0;
+    }
+    gpu->upload_wait_trace_count = 0;
+    gpu->upload_wait_trace_initialized = 0;
+}
+
+static int upload_wait_trace_init(h3_gpu *gpu) {
+    if (!gpu || !gpu->upload_wait_trace_requested) return 1;
+    if (gpu->upload_wait_trace_initialized) return 1;
+    if (!gpu->upload_wait_trace_complete ||
+        !gpu->upload_wait_trace_union_valid) return 0;
+    for (size_t index = 0; index < H3CSPEED_UPLOAD_WAIT_TRACE_CAPACITY;
+         index++) {
+        cudaError_t status = cudaEventCreate(
+            &gpu->upload_wait_trace_entries[index].start);
+        if (status != cudaSuccess) {
+            upload_wait_trace_clear_events(gpu);
+            upload_wait_trace_mark_failed(gpu, "cudaEventCreate(upload wait start)");
+            return 0;
+        }
+        status = cudaEventCreate(&gpu->upload_wait_trace_entries[index].end);
+        if (status != cudaSuccess) {
+            upload_wait_trace_clear_events(gpu);
+            upload_wait_trace_mark_failed(gpu, "cudaEventCreate(upload wait end)");
+            return 0;
+        }
+        gpu->upload_wait_trace_entries[index].valid = 0;
+    }
+    gpu->upload_wait_trace_initialized = 1;
+    return 1;
+}
+
+static void upload_wait_trace_destroy(h3_gpu *gpu) {
+    upload_wait_trace_clear_events(gpu);
+}
+
+/* Return 1 when an event pair was armed, 0 when tracing is disabled/outside
+ * the DiT scope, and -1 when the opt-in trace failed closed. */
+static int upload_wait_trace_begin(h3_gpu *gpu, size_t *slot) {
+    if (!gpu || !gpu->upload_wait_trace_requested ||
+        !gpu->profile_dit_scope_active) return 0;
+    pthread_mutex_lock(&gpu->lock);
+    if (!gpu->upload_wait_trace_complete ||
+        gpu->upload_wait_trace_count >= H3CSPEED_UPLOAD_WAIT_TRACE_CAPACITY) {
+        if (gpu->upload_wait_trace_complete) {
+            gpu->upload_wait_trace_overflow = 1;
+            gpu->upload_wait_trace_complete = 0;
+            gpu->upload_wait_trace_union_valid = 0;
+        }
+        pthread_mutex_unlock(&gpu->lock);
+        return -1;
+    }
+    size_t index = gpu->upload_wait_trace_count;
+    cudaError_t status = cudaEventRecord(
+        gpu->upload_wait_trace_entries[index].start, gpu->compute_stream);
+    if (status != cudaSuccess) {
+        gpu->upload_wait_trace_complete = 0;
+        gpu->upload_wait_trace_union_valid = 0;
+        pthread_mutex_unlock(&gpu->lock);
+        h3cspeed_set_error(gpu, "cudaEventRecord(upload wait start)",
+                           cudaGetErrorString(status));
+        return -1;
+    }
+    gpu->upload_wait_trace_entries[index].valid = 1;
+    gpu->upload_wait_trace_count++;
+    pthread_mutex_unlock(&gpu->lock);
+    if (slot) *slot = index;
+    return 1;
+}
+
+static int upload_wait_trace_end(h3_gpu *gpu, size_t slot) {
+    if (!gpu || !gpu->upload_wait_trace_requested ||
+        slot >= H3CSPEED_UPLOAD_WAIT_TRACE_CAPACITY) return 1;
+    pthread_mutex_lock(&gpu->lock);
+    if (!gpu->upload_wait_trace_entries[slot].valid) {
+        pthread_mutex_unlock(&gpu->lock);
+        return 1;
+    }
+    cudaError_t status = cudaEventRecord(
+        gpu->upload_wait_trace_entries[slot].end, gpu->compute_stream);
+    if (status != cudaSuccess) {
+        gpu->upload_wait_trace_entries[slot].valid = 0;
+        gpu->upload_wait_trace_complete = 0;
+        gpu->upload_wait_trace_union_valid = 0;
+        pthread_mutex_unlock(&gpu->lock);
+        h3cspeed_set_error(gpu, "cudaEventRecord(upload wait end)",
+                           cudaGetErrorString(status));
+        return 0;
+    }
+    pthread_mutex_unlock(&gpu->lock);
+    return 1;
+}
+
+static void upload_wait_trace_resolve(h3_gpu *gpu) {
+    if (!gpu || !gpu->upload_wait_trace_requested) return;
+    pthread_mutex_lock(&gpu->lock);
+    size_t count = gpu->upload_wait_trace_count;
+    pthread_mutex_unlock(&gpu->lock);
+    for (size_t index = 0; index < count; index++) {
+        pthread_mutex_lock(&gpu->lock);
+        int valid = gpu->upload_wait_trace_entries[index].valid;
+        cudaEvent_t start = gpu->upload_wait_trace_entries[index].start;
+        cudaEvent_t end = gpu->upload_wait_trace_entries[index].end;
+        pthread_mutex_unlock(&gpu->lock);
+        if (!valid) continue;
+        float milliseconds = 0.0f;
+        cudaError_t status = cudaEventElapsedTime(&milliseconds, start, end);
+        if (status != cudaSuccess || !std::isfinite(milliseconds) ||
+            milliseconds < 0.0f) {
+            upload_wait_trace_mark_failed(gpu,
+                                          "cudaEventElapsedTime(upload wait)");
+            continue;
+        }
+        pthread_mutex_lock(&gpu->lock);
+        gpu->upload_ready_wait_seconds += (double)milliseconds / 1000.0;
+        gpu->upload_ready_wait_count++;
+        pthread_mutex_unlock(&gpu->lock);
+    }
+    pthread_mutex_lock(&gpu->lock);
+    for (size_t index = 0; index < count; index++)
+        gpu->upload_wait_trace_entries[index].valid = 0;
+    gpu->upload_wait_trace_count = 0;
+    pthread_mutex_unlock(&gpu->lock);
+}
+
+extern "C" void h3cspeed_cuda_profile_dit_scope_begin(
+        h3_gpu *gpu, int ssd_streaming, int one_ahead_convrot) {
+    if (!gpu) return;
+    if (gpu->upload_wait_trace_requested &&
+        !gpu->upload_wait_trace_initialized &&
+        !upload_wait_trace_init(gpu)) return;
+    pthread_mutex_lock(&gpu->lock);
+    gpu->profile_dit_scope_seen = 1;
+    gpu->profile_dit_scope_active =
+        gpu->upload_wait_trace_requested &&
+        gpu->upload_wait_trace_initialized ? 1 : 0;
+    gpu->profile_dit_ssd_streaming = ssd_streaming ? 1 : 0;
+    gpu->dit_prefetch_requested = dit_prefetch_requested();
+    snprintf(gpu->dit_prefetch_mode, sizeof(gpu->dit_prefetch_mode), "%s",
+             one_ahead_convrot ? "one_ahead_convrot" : "disabled");
+    pthread_mutex_unlock(&gpu->lock);
+}
+
+extern "C" void h3cspeed_cuda_profile_dit_scope_end(h3_gpu *gpu) {
+    if (!gpu) return;
+    pthread_mutex_lock(&gpu->lock);
+    gpu->profile_dit_scope_active = 0;
+    pthread_mutex_unlock(&gpu->lock);
+}
+
+static void profile_prefetch_counter(h3_gpu *gpu, int kind) {
+    if (!gpu || !gpu->profile_enabled) return;
+    pthread_mutex_lock(&gpu->lock);
+    uint64_t *counter = nullptr;
+    switch (kind) {
+        case 0: counter = &gpu->prefetch_reserve_count; break;
+        case 1: counter = &gpu->prefetch_upload_count; break;
+        case 2: counter = &gpu->prefetch_consume_count; break;
+        case 3: counter = &gpu->prefetch_cancel_count; break;
+        case 4: counter = &gpu->prefetch_error_count; break;
+        case 5: counter = &gpu->prefetch_block_count; break;
+        default: break;
+    }
+    if (counter) (*counter)++;
+    pthread_mutex_unlock(&gpu->lock);
+}
+
+extern "C" void h3cspeed_cuda_profile_note_prefetch_error(h3_gpu *gpu) {
+    profile_prefetch_counter(gpu, 4);
+}
+
+extern "C" void h3cspeed_cuda_profile_note_prefetch_block(h3_gpu *gpu) {
+    profile_prefetch_counter(gpu, 5);
 }
 
 static int read_exact(h3_gpu *gpu, int descriptor, void *buffer, size_t bytes,
@@ -818,6 +1014,7 @@ int h3cspeed_tensor_prepare(h3_gpu *gpu, h3_gpu_tensor *tensor) {
         if (gpu) h3cspeed_set_error(gpu, "tensor prepare", "invalid CUDA tensor");
         return 0;
     }
+    int consumed_prefetch = 0;
     pthread_mutex_lock(&gpu->offload_lock);
     if (!tensor->data) {
         if (!tensor->offloadable || !tensor->source_bytes ||
@@ -844,19 +1041,24 @@ int h3cspeed_tensor_prepare(h3_gpu *gpu, h3_gpu_tensor *tensor) {
         lru_append_locked(gpu, tensor);
     }
     if (tensor->offloadable) {
+        consumed_prefetch = tensor->prefetch_reserved;
         tensor->prefetch_reserved = 0;
         tensor->pin_epoch = gpu->operation_epoch;
     }
     pthread_mutex_unlock(&gpu->offload_lock);
+    if (consumed_prefetch) profile_prefetch_counter(gpu, 2);
 
     pthread_mutex_lock(&tensor->lock);
     int ready_valid = tensor->ready_valid;
     cudaEvent_t ready = tensor->ready;
     pthread_mutex_unlock(&tensor->lock);
     if (!ready_valid) return 1;
-    return h3cspeed_cuda_ok(gpu,
-        cudaStreamWaitEvent(gpu->compute_stream, ready, 0),
-        "cudaStreamWaitEvent(weight ready)");
+    size_t trace_slot = 0;
+    int trace_armed = upload_wait_trace_begin(gpu, &trace_slot);
+    cudaError_t wait_status = cudaStreamWaitEvent(gpu->compute_stream, ready, 0);
+    if (trace_armed > 0) (void)upload_wait_trace_end(gpu, trace_slot);
+    return h3cspeed_cuda_ok(gpu, wait_status,
+                            "cudaStreamWaitEvent(weight ready)");
 }
 
 static int dit_prefetch_requested(void) {
@@ -894,6 +1096,7 @@ extern "C" int h3cspeed_cuda_reserve_prefetch_weight(
         tensor->prefetch_reserved = 1;
         lru_append_locked(gpu, tensor);
         pthread_mutex_unlock(&gpu->offload_lock);
+        profile_prefetch_counter(gpu, 0);
         return 1;
     }
     if (!device_allocate_locked(gpu, &tensor->data, tensor->bytes, 1,
@@ -910,6 +1113,7 @@ extern "C" int h3cspeed_cuda_reserve_prefetch_weight(
     tensor->prefetch_reserved = 1;
     lru_append_locked(gpu, tensor);
     pthread_mutex_unlock(&gpu->offload_lock);
+    profile_prefetch_counter(gpu, 0);
     return 1;
 }
 
@@ -949,6 +1153,7 @@ extern "C" int h3cspeed_cuda_prefetch_weight(h3_gpu *gpu,
         tensor->prefetch_reserved = 1;
         lru_append_locked(gpu, tensor);
         pthread_mutex_unlock(&gpu->offload_lock);
+        profile_prefetch_counter(gpu, 1);
         return 1;
     }
 
@@ -985,6 +1190,7 @@ extern "C" int h3cspeed_cuda_prefetch_weight(h3_gpu *gpu,
     tensor->prefetch_reserved = 1;
     lru_append_locked(gpu, tensor);
     pthread_mutex_unlock(&gpu->offload_lock);
+    profile_prefetch_counter(gpu, 1);
     return 1;
 }
 
@@ -994,6 +1200,7 @@ extern "C" void h3cspeed_cuda_cancel_prefetch_weight(
     pthread_mutex_lock(&gpu->offload_lock);
     tensor->prefetch_reserved = 0;
     pthread_mutex_unlock(&gpu->offload_lock);
+    profile_prefetch_counter(gpu, 3);
 }
 
 extern "C" int h3cspeed_cuda_prime_prefetch_weight(
@@ -1013,6 +1220,7 @@ extern "C" int h3cspeed_cuda_prime_prefetch_weight(
         tensor->pin_epoch == gpu->operation_epoch) {
         tensor->prefetch_reserved = 1;
         pthread_mutex_unlock(&gpu->offload_lock);
+        profile_prefetch_counter(gpu, 0);
         return 1;
     }
     pthread_mutex_unlock(&gpu->offload_lock);
@@ -1122,7 +1330,8 @@ extern "C" h3_gpu *h3_gpu_create(const char *shader_source_path,
     pthread_mutex_init(&gpu->scratch_lock, nullptr);
     pthread_mutex_init(&gpu->offload_lock, nullptr);
     pthread_mutex_init(&gpu->staging_lock, nullptr);
-    gpu->async_refill_enabled = async_refill_requested();
+    gpu->async_refill_requested = async_refill_requested();
+    gpu->async_refill_enabled = gpu->async_refill_requested;
     gpu->refill_trace_requested = refill_trace_requested();
     const char *profile_json_dir = getenv("H3_PROFILE_JSON_DIR");
     gpu->profile_enabled = environment_flag_enabled("H3_PROFILE") ||
@@ -1130,6 +1339,14 @@ extern "C" h3_gpu *h3_gpu_create(const char *shader_source_path,
     gpu->profile_context_id = next_profile_context_id();
     gpu->profile_context_start_seconds = h3cspeed_profile_now_seconds();
     h3cspeed_profile_metrics_init(&gpu->profile_metrics);
+    gpu->upload_wait_trace_requested =
+        getenv("H3_CUDA_UPLOAD_WAIT_TRACE") &&
+        strcmp(getenv("H3_CUDA_UPLOAD_WAIT_TRACE"), "1") == 0;
+    gpu->upload_wait_trace_complete = gpu->upload_wait_trace_requested ? 1 : 0;
+    gpu->upload_wait_trace_union_valid = gpu->upload_wait_trace_requested ? 1 : 0;
+    gpu->dit_prefetch_requested = dit_prefetch_requested();
+    snprintf(gpu->dit_prefetch_mode, sizeof(gpu->dit_prefetch_mode),
+             "%s", "disabled");
     if (profile_json_dir && strlen(profile_json_dir) >=
                                 sizeof(gpu->profile_json_dir)) {
         h3cspeed_set_error(gpu, "H3_PROFILE_JSON_DIR", "path is too long");
@@ -1261,6 +1478,30 @@ static void profile_write_final_report(h3_gpu *gpu) {
     report.linear_dispatches = gpu->stats.mps_linear_dispatches;
     report.convolution_dispatches = gpu->stats.mps_conv_dispatches;
     report.attention_dispatches = gpu->stats.mps_sdpa_dispatches;
+    report.perf006.dit_prefetch_requested = gpu->dit_prefetch_requested;
+    report.perf006.dit_prefetch_mode = gpu->dit_prefetch_mode;
+    report.perf006.async_refill_requested = gpu->async_refill_requested;
+    report.perf006.async_refill_active = async_refill_active(gpu);
+    report.perf006.ssd_streaming = gpu->profile_dit_ssd_streaming;
+    report.perf006.upload_wait_trace_requested =
+        gpu->upload_wait_trace_requested;
+    report.perf006.upload_wait_trace_complete =
+        gpu->upload_wait_trace_requested &&
+        gpu->upload_wait_trace_initialized &&
+        gpu->upload_wait_trace_complete;
+    report.perf006.upload_wait_trace_overflow = gpu->upload_wait_trace_overflow;
+    report.perf006.upload_wait_trace_union_valid =
+        gpu->upload_wait_trace_requested && gpu->upload_wait_trace_union_valid;
+    report.perf006.scope = gpu->profile_dit_scope_seen ?
+        "dit_denoise" : "none";
+    report.perf006.upload_ready_wait_seconds = gpu->upload_ready_wait_seconds;
+    report.perf006.upload_ready_wait_count = gpu->upload_ready_wait_count;
+    report.perf006.prefetch_reserve_count = gpu->prefetch_reserve_count;
+    report.perf006.prefetch_upload_count = gpu->prefetch_upload_count;
+    report.perf006.prefetch_consume_count = gpu->prefetch_consume_count;
+    report.perf006.prefetch_cancel_count = gpu->prefetch_cancel_count;
+    report.perf006.prefetch_error_count = gpu->prefetch_error_count;
+    report.perf006.prefetch_block_count = gpu->prefetch_block_count;
     pthread_mutex_unlock(&gpu->lock);
 
     char output_path[1024] = {0};
@@ -1284,6 +1525,7 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
     if (gpu->upload_stream)
         (void)profiled_stream_synchronize(
             gpu, gpu->upload_stream, H3CSPEED_PROFILE_STREAM_UPLOAD);
+    upload_wait_trace_resolve(gpu);
     if (gpu->profile_enabled || gpu->offload.enabled) {
         const char *safe_label = h3cspeed_profile_safe_label(gpu->profile_label);
         const bool has_safe_label = strcmp(safe_label, "redacted") != 0;
@@ -1321,6 +1563,7 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
     /* Both streams were synchronized above; only then is it safe to destroy
      * timing events that may still be referenced by the upload stream. */
     refill_trace_destroy(gpu);
+    upload_wait_trace_destroy(gpu);
     if (gpu->scratch) cudaFree(gpu->scratch);
     if (gpu->staging_done[0]) cudaEventDestroy(gpu->staging_done[0]);
     if (gpu->staging_done[1]) cudaEventDestroy(gpu->staging_done[1]);
@@ -1921,6 +2164,7 @@ extern "C" int h3_gpu_submit(h3_gpu *gpu) {
         gpu, profiled_stream_synchronize(
                  gpu, gpu->upload_stream, H3CSPEED_PROFILE_STREAM_UPLOAD),
         "cudaStreamSynchronize(upload)");
+    upload_wait_trace_resolve(gpu);
     if (!compute_ok) {
         if (!upload_ok) {
             char submit_error[512];

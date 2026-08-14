@@ -295,3 +295,10 @@ python scripts/perf002_comfy_trace.py `
 The bound-host smoke has now executed and passed media/full-decode and
 five-frame visual review. The required 124-frame matched A/B, native-control
 comparison and PERF-001 gates remain `NOT_RUN`.
+
+The same isolated h3 smoke adapter can additionally collect PERF-006 route and
+DiT upload-ready-wait evidence when `H3_CUDA_ASYNC_REFILL=1`,
+`H3_CUDA_UPLOAD_WAIT_TRACE=1`, profiling is enabled and SSD streaming is
+absent. This is engine-specific diagnostic evidence; the ordinary PERF-002C
+smoke result continues to report matched A/B as `NOT_RUN` until two sanitized
+results are combined with `scripts/validate_perf006_ab.py`.

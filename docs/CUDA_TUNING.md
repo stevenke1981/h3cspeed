@@ -55,6 +55,13 @@ an immediate allocation failure.
   the next block consumes them or the reservation is cancelled. BF16 SSD
   streaming deliberately keeps its existing slot/thread schedule and is
   outside this first integration slice.
+- `H3_CUDA_UPLOAD_WAIT_TRACE=1` requires profiling and records DiT-scoped
+  upload-ready waits plus PERF-006 route/counter metadata. The exact-value
+  opt-in lazily allocates a 4,096-entry timing-event ring only for the
+  `dit_denoise` context. Initialization failure or overflow invalidates the
+  performance gate; reports must show `upload_wait_trace_complete=true`,
+  `upload_wait_trace_overflow=false` and `upload_wait_trace_union_valid=true`.
+  This diagnostic mode is not intended for normal serving.
 - `H3_CUDA_RELEASE_SCRATCH=0|1`
 - `H3_CUDA_OFFLOAD_VERBOSE=1`
 - `H3_CUDA_DEVICE=N`
@@ -71,6 +78,15 @@ after all chunks have been enqueued. If pinned staging or either slot event is
 unavailable, the runtime keeps the original single-buffer synchronous path.
 This switch does not increase the configured staging allocation and does not by
 itself prove end-to-end DiT overlap or a video wall-time improvement.
+
+The PERF-006 upload-wait trace measures the device interval associated with
+the compute stream waiting for a weight's upload-ready event. It does not
+relabel compute, file-read, eviction or final-drain time as upload-ready wait.
+Use `scripts/validate_perf006_ab.py` on a same-binary baseline/candidate pair.
+It emits `OBSERVED_WAIT_PASS` when the numerical threshold and parity contract
+hold; this does not become the formal fixed cold-cache gate until cache/order
+metadata and counterbalanced trials satisfy the benchmark plan. It is also not
+an end-to-end speedup if process wall rises.
 
 `H3_CUDA_REFILL_TRACE` is also exact-value opt-in and only becomes active when
 the two-slot path is active. It keeps at most 64 private entries, records no

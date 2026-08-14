@@ -43,7 +43,8 @@ ALLOWED_ENVIRONMENT = {
     "H3_PROFILE_JSON_DIR", "PYTHONIOENCODING", "PYTHONUTF8",
     "H3CSPEED_PERF002_ATTENTION_TRACE", "H3CSPEED_PERF002_SCHEDULER_TRACE",
     "H3CSPEED_TEXT_EMBEDDING", "H3CSPEED_TEXT_ENCODER_SHA256", "H3_FFMPEG",
-    "H3_CUDA_DIT_PREFETCH", "H3_VAE_LAYER_MAJOR",
+    "H3_CUDA_ASYNC_REFILL", "H3_CUDA_DIT_PREFETCH",
+    "H3_CUDA_UPLOAD_WAIT_TRACE", "H3_VAE_LAYER_MAJOR",
 }
 BASE_ENVIRONMENT = {
     "APPDATA", "COMSPEC", "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA",
@@ -573,6 +574,21 @@ def _validate_h3_command(config: dict[str, Any], manifest: dict[str, Any],
     if dit_prefetch == "1" and "--ssd-streaming" in argv:
         raise ContractError(
             "DiT prefetch smoke evidence requires non-SSD ConvRot execution")
+    async_refill = environment.get("H3_CUDA_ASYNC_REFILL")
+    if async_refill not in (None, "1"):
+        raise ContractError("H3_CUDA_ASYNC_REFILL must be absent or exactly 1")
+    upload_wait_trace = environment.get("H3_CUDA_UPLOAD_WAIT_TRACE")
+    if upload_wait_trace not in (None, "1"):
+        raise ContractError("H3_CUDA_UPLOAD_WAIT_TRACE must be absent or exactly 1")
+    if upload_wait_trace == "1":
+        if (environment.get("H3_PROFILE") != "1" or
+                async_refill != "1" or "--ssd-streaming" in argv):
+            raise ContractError(
+                "PERF-006 wait evidence requires profiling, async refill, and non-SSD execution")
+        profile_dir = environment.get("H3_PROFILE_JSON_DIR")
+        if not isinstance(profile_dir, str) or not Path(profile_dir).is_absolute():
+            raise ContractError(
+                "PERF-006 wait evidence requires an absolute H3_PROFILE_JSON_DIR")
     engine_bindings = _mapping(
         _mapping(_mapping(config.get("bindings"), "bindings").get("engines"),
                  "bindings.engines").get("h3cspeed"),
@@ -612,7 +628,10 @@ def _validate_command(config: dict[str, Any], manifest: dict[str, Any],
     if config.get("schema_version") != SCHEMA_VERSION or config.get("engine") != engine:
         raise ContractError("private command config does not match this engine")
     requested_environment = _mapping(config.get("environment"), "environment")
-    h3_only_environment = {"H3_CUDA_DIT_PREFETCH", "H3_VAE_LAYER_MAJOR"}
+    h3_only_environment = {
+        "H3_CUDA_ASYNC_REFILL", "H3_CUDA_DIT_PREFETCH",
+        "H3_CUDA_UPLOAD_WAIT_TRACE", "H3_VAE_LAYER_MAJOR",
+    }
     if engine != "h3cspeed" and h3_only_environment & set(requested_environment):
         raise ContractError("H3 CUDA optimization flags are valid only for h3cspeed")
     argv = config.get("argv")
@@ -896,6 +915,94 @@ def _h3_layer_major_evidence(path: Path) -> dict[str, Any]:
     }
 
 
+def _perf006_matched_contract(argv: list[str], environment: dict[str, str]) -> str:
+    normalized_argv = list(argv)
+    if "-o" in normalized_argv:
+        normalized_argv[normalized_argv.index("-o") + 1] = "<output-media>"
+    normalized_environment = dict(environment)
+    for key, replacement in (
+            ("H3_CUDA_DIT_PREFETCH", "<variant>"),
+            ("H3_PROFILE_JSON_DIR", "<profile-directory>"),
+            ("H3CSPEED_PERF002_SCHEDULER_TRACE", "<scheduler-trace>"),
+            ("H3CSPEED_PERF002_ATTENTION_TRACE", "<attention-trace>")):
+        if key == "H3_CUDA_DIT_PREFETCH" or key in normalized_environment:
+            normalized_environment[key] = replacement
+    return sha256_bytes(canonical_bytes({
+        "argv": normalized_argv, "environment": normalized_environment,
+    }))
+
+
+def _perf006_profile_evidence(profile_directory: Path,
+                              environment: dict[str, str],
+                              argv: list[str]) -> dict[str, Any]:
+    directory = safe_existing_directory(profile_directory,
+                                        "PERF-006 profile directory")
+    profiles = sorted(directory.glob("*-H3_DiT.json"))
+    if len(profiles) != 1:
+        raise ContractError("PERF-006 evidence requires exactly one H3 DiT profile")
+    profile_path = safe_regular(profiles[0], "PERF-006 H3 DiT profile")
+    report = _mapping(_load_json(profile_path, "PERF-006 H3 DiT profile"),
+                      "PERF-006 H3 DiT profile")
+    context = _mapping(report.get("context"), "PERF-006 profile context")
+    if (report.get("schema_version") != 1 or
+            report.get("kind") != "h3cspeed.cuda.profile" or
+            context.get("complete") is not True):
+        raise ContractError("PERF-006 H3 DiT profile is incomplete")
+    perf006 = _mapping(report.get("perf006"), "PERF-006 profile evidence")
+    variant = "candidate" if environment.get("H3_CUDA_DIT_PREFETCH") == "1" else "baseline"
+    expected_prefetch = variant == "candidate"
+    expected_mode = "one_ahead_convrot" if expected_prefetch else "disabled"
+    exact = {
+        "dit_prefetch_requested": expected_prefetch,
+        "dit_prefetch_mode": expected_mode,
+        "async_refill_requested": True,
+        "async_refill_active": True,
+        "ssd_streaming": False,
+        "upload_wait_trace_requested": True,
+        "upload_wait_trace_complete": True,
+        "upload_wait_trace_overflow": False,
+        "upload_wait_trace_union_valid": True,
+        "scope": "dit_denoise",
+    }
+    for key, expected in exact.items():
+        if perf006.get(key) != expected:
+            raise ContractError(f"PERF-006 profile has invalid {key}")
+    wait = perf006.get("exclusive_upload_ready_wait_seconds")
+    count = perf006.get("upload_ready_wait_count")
+    if (isinstance(wait, bool) or not isinstance(wait, (int, float)) or
+            not math.isfinite(float(wait)) or float(wait) < 0 or
+            isinstance(count, bool) or not isinstance(count, int) or count < 0):
+        raise ContractError("PERF-006 upload-ready wait evidence is invalid")
+    counters: dict[str, int] = {}
+    for key in ("prefetch_reserve_count", "prefetch_upload_count",
+                "prefetch_consume_count", "prefetch_cancel_count",
+                "prefetch_error_count", "prefetch_block_count"):
+        value = perf006.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ContractError(f"PERF-006 profile has invalid {key}")
+        counters[key] = value
+    if expected_prefetch:
+        if (counters["prefetch_block_count"] <= 0 or
+                counters["prefetch_upload_count"] <= 0 or
+                counters["prefetch_error_count"] != 0):
+            raise ContractError("PERF-006 candidate route did not prefetch successfully")
+    elif any(counters.values()):
+        raise ContractError("PERF-006 baseline unexpectedly used prefetch")
+    return {
+        "variant": variant, "dit_prefetch_mode": expected_mode,
+        **{key: perf006[key] for key in (
+            "async_refill_requested", "async_refill_active", "ssd_streaming",
+            "upload_wait_trace_requested", "upload_wait_trace_complete",
+            "upload_wait_trace_overflow", "scope")},
+        "union_valid": perf006["upload_wait_trace_union_valid"],
+        "exclusive_upload_ready_wait_seconds": float(wait),
+        "upload_ready_wait_count": count, **counters,
+        "binary_sha256": sha256_file(safe_regular(Path(argv[0]), "engine executable")),
+        "matched_contract_sha256": _perf006_matched_contract(argv, environment),
+        "profile_sha256": sha256_file(profile_path),
+    }
+
+
 def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
               ffmpeg: str, ffprobe: str, timeout_seconds: int) -> Path:
     if not 1 <= timeout_seconds <= 14400:
@@ -950,8 +1057,18 @@ def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
     media = Path(config["output_media"])
     scheduler_trace = Path(config["scheduler_trace"])
     attention_trace = Path(config["attention_trace"])
+    perf006_profile_directory: Path | None = None
+    if (engine == "h3cspeed" and
+            environment.get("H3_CUDA_UPLOAD_WAIT_TRACE") == "1"):
+        perf006_profile_directory = Path(environment["H3_PROFILE_JSON_DIR"])
+        profile_directory = safe_existing_directory(
+            perf006_profile_directory, "PERF-006 profile directory")
+        if any(profile_directory.iterdir()):
+            raise ContractError("PERF-006 profile directory must be empty")
     destinations = [output, media.parent, scheduler_trace.parent,
                     attention_trace.parent]
+    if perf006_profile_directory is not None:
+        destinations.append(perf006_profile_directory)
     if runtime_candidate is not None and runtime_candidate.exists():
         destinations.append(safe_existing_directory(
             runtime_candidate, "ComfyUI runtime directory"))
@@ -997,6 +1114,10 @@ def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
     optimization = None
     if engine == "h3cspeed" and environment.get("H3_VAE_LAYER_MAJOR") == "1":
         optimization = _h3_layer_major_evidence(log)
+    perf006 = None
+    if perf006_profile_directory is not None:
+        perf006 = _perf006_profile_evidence(
+            perf006_profile_directory, environment, argv)
     result = {
         "schema_version": SCHEMA_VERSION, "kind": KIND,
         "input_manifest_sha256": manifest_digest, "engine": engine,
@@ -1012,6 +1133,8 @@ def run_smoke(manifest_path: Path, config_path: Path, output_directory: Path,
     }
     if optimization is not None:
         result["optimization_evidence"] = optimization
+    if perf006 is not None:
+        result["perf006_evidence"] = perf006
     destination = output / f"{engine}-smoke-result.json"
     publish_json(destination, result)
     return destination

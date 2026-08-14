@@ -1317,6 +1317,9 @@ static int reserve_convrot_block(h3_dit *dit, unsigned block,
         if (!tensors[index] ||
             !h3cspeed_cuda_reserve_prefetch_weight(dit->gpu,
                                                    tensors[index])) {
+#ifdef H3CSPEED_CUDA
+            h3cspeed_cuda_profile_note_prefetch_error(dit->gpu);
+#endif
             for (size_t reserved = 0; reserved < index; reserved++)
                 h3cspeed_cuda_cancel_prefetch_weight(
                     dit->gpu, tensors[reserved]);
@@ -1349,6 +1352,9 @@ static int upload_convrot_block(h3_dit *dit, unsigned block,
         dit, block, norm1_already_consumed, tensors, names);
     for (size_t index = 0; index < count; index++) {
         if (!h3cspeed_cuda_prefetch_weight(dit->gpu, tensors[index])) {
+#ifdef H3CSPEED_CUDA
+            h3cspeed_cuda_profile_note_prefetch_error(dit->gpu);
+#endif
             cancel_convrot_prefetch(
                 dit, block, norm1_already_consumed);
             fail(error, error_size,
@@ -1360,6 +1366,9 @@ static int upload_convrot_block(h3_dit *dit, unsigned block,
     if (getenv("H3_PROFILE"))
         fprintf(stderr, "h3: prefetched ConvRot DiT block %u (%zu weights)\n",
                 block, count);
+#ifdef H3CSPEED_CUDA
+    h3cspeed_cuda_profile_note_prefetch_block(dit->gpu);
+#endif
     return 1;
 #endif
 }
@@ -1385,6 +1394,9 @@ static int prefetch_convrot_block(h3_dit *dit, unsigned block,
         if (!tensors[index] ||
             !h3cspeed_cuda_prime_prefetch_weight(dit->gpu,
                                                  tensors[index])) {
+#ifdef H3CSPEED_CUDA
+            h3cspeed_cuda_profile_note_prefetch_error(dit->gpu);
+#endif
             cancel_convrot_prefetch(dit, block, norm1_already_consumed);
             fail(error, error_size,
                  "cannot prime DiT block %u %s prefetch: %s",
@@ -3129,11 +3141,21 @@ int h3_dit_denoise_euler_preview(
         fail(error, error_size, "invalid Euler denoising arguments");
         return 0;
     }
-    if (gpu_sampler_requested(dit))
-        return denoise_euler_gpu(dit, video_latent, audio_latent,
-                                 reuse_interval, progress, progress_opaque,
-                                 preview, preview_opaque,
-                                 error, error_size);
+#ifdef H3CSPEED_CUDA
+    h3cspeed_cuda_profile_dit_scope_begin(
+        dit->gpu, dit->ssd_streaming,
+        dit_prefetch_requested() && dit->checkpoint_convrot_int8 &&
+        !dit->ssd_streaming);
+#endif
+    if (gpu_sampler_requested(dit)) {
+        int result = denoise_euler_gpu(
+            dit, video_latent, audio_latent, reuse_interval, progress,
+            progress_opaque, preview, preview_opaque, error, error_size);
+#ifdef H3CSPEED_CUDA
+        h3cspeed_cuda_profile_dit_scope_end(dit->gpu);
+#endif
+        return result;
+    }
     uint8_t selected[H3_MAX_STEPS] = {0};
     int selected_count = h3_dit_reuse_schedule(
         dit->sigmas.steps, reuse_interval, selected, sizeof(selected));
@@ -3143,6 +3165,9 @@ int h3_dit_denoise_euler_preview(
         fail(error, error_size,
              "H3_REUSE_STEPS must be increasing and include 0 and %d",
              dit->sigmas.steps - 1);
+#ifdef H3CSPEED_CUDA
+        h3cspeed_cuda_profile_dit_scope_end(dit->gpu);
+#endif
         return 0;
     }
     if (custom_count > 0) selected_count = custom_count;
@@ -3171,6 +3196,9 @@ int h3_dit_denoise_euler_preview(
         free(previous_video);
         free(last_audio);
         free(previous_audio);
+#ifdef H3CSPEED_CUDA
+        h3cspeed_cuda_profile_dit_scope_end(dit->gpu);
+#endif
         return 0;
     }
     int ok = 1;
@@ -3238,6 +3266,9 @@ int h3_dit_denoise_euler_preview(
     free(last_audio);
     free(previous_audio);
     h3_gpu_profile_mark(dit->gpu, "Euler denoise");
+#ifdef H3CSPEED_CUDA
+    h3cspeed_cuda_profile_dit_scope_end(dit->gpu);
+#endif
     return ok;
 }
 

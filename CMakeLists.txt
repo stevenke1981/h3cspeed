@@ -90,6 +90,8 @@ if(H3CSPEED_OVERLAY_TESTS_ONLY)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_perf002_runner.py)
     add_test(NAME perf002_smoke_adapter
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_perf002_smoke.py)
+    add_test(NAME perf006_ab_contract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_perf006_ab.py)
     add_test(NAME perf002_comfy_trace_contract
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_perf002_comfy_trace.py)
     add_test(NAME online_softmax_math
@@ -492,11 +494,11 @@ if(H3CSPEED_ENABLE_TESTS)
     add_test(NAME cuda_dit_prefetch_disabled COMMAND test_cuda_dit_prefetch)
     set_tests_properties(cuda_dit_prefetch_disabled PROPERTIES
         SKIP_RETURN_CODE 77
-        ENVIRONMENT "H3_CUDA_DIT_PREFETCH=0;H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=0;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=1;H3_CUDA_REFILL_TRACE=1")
+        ENVIRONMENT "H3_CUDA_DIT_PREFETCH=0;H3_CUDA_UPLOAD_WAIT_TRACE=0;H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=0;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=1;H3_CUDA_REFILL_TRACE=1")
     add_test(NAME cuda_dit_prefetch_enabled COMMAND test_cuda_dit_prefetch)
     set_tests_properties(cuda_dit_prefetch_enabled PROPERTIES
         SKIP_RETURN_CODE 77
-        ENVIRONMENT "H3_CUDA_DIT_PREFETCH=1;H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=4;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=1;H3_CUDA_REFILL_TRACE=1")
+        ENVIRONMENT "H3_CUDA_DIT_PREFETCH=1;H3_CUDA_UPLOAD_WAIT_TRACE=1;H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=4;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=1;H3_CUDA_REFILL_TRACE=1")
     add_test(NAME cuda_numeric_regression COMMAND test_cuda_numeric_regression)
     set_tests_properties(cuda_numeric_regression PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME cuda_convrot_numeric COMMAND test_cuda_convrot_numeric)

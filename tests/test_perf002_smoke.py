@@ -328,6 +328,82 @@ class Perf002SmokeTests(unittest.TestCase):
         self.assertIn("runtime_dir", smoke._required_config_fields("comfyui"))
         self.assertIn("command_inputs", smoke._required_config_fields("comfyui"))
 
+    def test_perf006_profile_evidence_is_route_bound_and_matched(self) -> None:
+        smoke = load_script("run_perf002_smoke")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline_dir = root / "baseline"
+            candidate_dir = root / "candidate"
+            baseline_dir.mkdir()
+            candidate_dir.mkdir()
+
+            def write_profile(directory: Path, candidate: bool) -> None:
+                counters = {
+                    "prefetch_reserve_count": 10 if candidate else 0,
+                    "prefetch_upload_count": 10 if candidate else 0,
+                    "prefetch_consume_count": 9 if candidate else 0,
+                    "prefetch_cancel_count": 0,
+                    "prefetch_error_count": 0,
+                    "prefetch_block_count": 2 if candidate else 0,
+                }
+                report = {
+                    "schema_version": 1, "kind": "h3cspeed.cuda.profile",
+                    "context": {"complete": True},
+                    "perf006": {
+                        "dit_prefetch_requested": candidate,
+                        "dit_prefetch_mode": (
+                            "one_ahead_convrot" if candidate else "disabled"),
+                        "async_refill_requested": True,
+                        "async_refill_active": True, "ssd_streaming": False,
+                        "upload_wait_trace_requested": True,
+                        "upload_wait_trace_complete": True,
+                        "upload_wait_trace_overflow": False,
+                        "upload_wait_trace_union_valid": True,
+                        "scope": "dit_denoise",
+                        "exclusive_upload_ready_wait_seconds": (
+                            0.5 if candidate else 2.0),
+                        "upload_ready_wait_count": 5,
+                        **counters,
+                    },
+                }
+                (directory / "h3-profile-1-2-test-H3_DiT.json").write_text(
+                    json.dumps(report), encoding="utf-8")
+
+            write_profile(baseline_dir, False)
+            write_profile(candidate_dir, True)
+            argv_a = [sys.executable, "-o", str(root / "a.mp4")]
+            argv_b = [sys.executable, "-o", str(root / "b.mp4")]
+            base_env = {
+                "H3_CUDA_ASYNC_REFILL": "1", "H3_CUDA_UPLOAD_WAIT_TRACE": "1",
+                "H3_PROFILE_JSON_DIR": str(baseline_dir),
+                "H3CSPEED_PERF002_SCHEDULER_TRACE": str(root / "a-scheduler.json"),
+                "H3CSPEED_PERF002_ATTENTION_TRACE": str(root / "a-attention.json"),
+            }
+            candidate_env = dict(base_env)
+            candidate_env.update({
+                "H3_CUDA_DIT_PREFETCH": "1",
+                "H3_PROFILE_JSON_DIR": str(candidate_dir),
+                "H3CSPEED_PERF002_SCHEDULER_TRACE": str(root / "b-scheduler.json"),
+                "H3CSPEED_PERF002_ATTENTION_TRACE": str(root / "b-attention.json"),
+            })
+            baseline = smoke._perf006_profile_evidence(
+                baseline_dir, base_env, argv_a)
+            candidate = smoke._perf006_profile_evidence(
+                candidate_dir, candidate_env, argv_b)
+            self.assertEqual(baseline["variant"], "baseline")
+            self.assertEqual(candidate["variant"], "candidate")
+            self.assertEqual(baseline["matched_contract_sha256"],
+                             candidate["matched_contract_sha256"])
+            self.assertEqual(candidate["prefetch_upload_count"], 10)
+
+            bad = json.loads(next(candidate_dir.glob("*.json")).read_text(
+                encoding="utf-8"))
+            bad["perf006"]["upload_wait_trace_overflow"] = True
+            next(candidate_dir.glob("*.json")).write_text(
+                json.dumps(bad), encoding="utf-8")
+            with self.assertRaisesRegex(smoke.ContractError, "overflow"):
+                smoke._perf006_profile_evidence(candidate_dir, candidate_env, argv_b)
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
                          "ffmpeg and ffprobe are required")
     def test_isolated_process_smoke_binds_evidence_without_claiming_ab(self) -> None:

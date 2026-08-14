@@ -48,6 +48,31 @@ typedef struct h3cspeed_profile_metrics {
     double compute_device_seconds;
 } h3cspeed_profile_metrics;
 
+/* Additive PERF-006 route evidence.  These fields intentionally sit outside
+ * the older timing/count reducers so schema-v1 consumers can ignore the
+ * section while newer consumers can distinguish an observed upload-ready
+ * device wait from host-side stream or eviction timing. */
+typedef struct h3cspeed_profile_perf006 {
+    int dit_prefetch_requested;
+    const char *dit_prefetch_mode;
+    int async_refill_requested;
+    int async_refill_active;
+    int ssd_streaming;
+    int upload_wait_trace_requested;
+    int upload_wait_trace_complete;
+    int upload_wait_trace_overflow;
+    int upload_wait_trace_union_valid;
+    const char *scope;
+    double upload_ready_wait_seconds;
+    uint64_t upload_ready_wait_count;
+    uint64_t prefetch_reserve_count;
+    uint64_t prefetch_upload_count;
+    uint64_t prefetch_consume_count;
+    uint64_t prefetch_cancel_count;
+    uint64_t prefetch_error_count;
+    uint64_t prefetch_block_count;
+} h3cspeed_profile_perf006;
+
 typedef struct h3cspeed_profile_report {
     uint64_t context_id;
     int device;
@@ -70,6 +95,7 @@ typedef struct h3cspeed_profile_report {
     uint64_t linear_dispatches;
     uint64_t convolution_dispatches;
     uint64_t attention_dispatches;
+    h3cspeed_profile_perf006 perf006;
 } h3cspeed_profile_report;
 
 void h3cspeed_profile_metrics_init(h3cspeed_profile_metrics *metrics);

@@ -155,6 +155,7 @@ int main(void) {
     }
     const char *env = getenv("H3_CUDA_DIT_PREFETCH");
     const int requested = env && strcmp(env, "1") == 0;
+    h3cspeed_cuda_profile_dit_scope_begin(gpu, 0, requested);
     h3_gpu_tensor *first = h3_gpu_tensor_load_f32(
         gpu, fixture, 0, tensor_bytes / sizeof(float));
     h3_gpu_tensor *second = h3_gpu_tensor_load_f32(
@@ -314,6 +315,21 @@ int main(void) {
     uint64_t fixture_size_after = 0;
     CHECK(fnv1a_file(fixture, &fixture_size_after) == fixture_hash_before);
     CHECK(fixture_size_after == fixture_size_before);
+    CHECK(h3_gpu_submit(gpu) == 1);
+    const char *trace_env = getenv("H3_CUDA_UPLOAD_WAIT_TRACE");
+    const int trace_requested = trace_env && strcmp(trace_env, "1") == 0;
+    if (trace_requested) {
+        CHECK(gpu->upload_wait_trace_requested == 1);
+        CHECK(gpu->upload_wait_trace_complete == 1);
+        CHECK(gpu->upload_ready_wait_count > 0);
+        CHECK(gpu->upload_ready_wait_seconds >= 0.0);
+        CHECK(gpu->upload_wait_trace_union_valid == 1);
+    } else {
+        CHECK(gpu->upload_wait_trace_requested == 0);
+        CHECK(gpu->upload_ready_wait_count == 0);
+        CHECK(gpu->upload_wait_trace_complete == 0);
+    }
+    h3cspeed_cuda_profile_dit_scope_end(gpu);
     h3_gpu_tensor_free(first);
     h3_gpu_tensor_free(second);
     h3_gpu_tensor_free(third);
