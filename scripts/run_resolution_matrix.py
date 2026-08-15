@@ -21,6 +21,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Iterable
 import zlib
 
@@ -28,6 +29,7 @@ import zlib
 SCHEMA_VERSION = 1
 CONFIG_KIND = "h3cspeed.resolution-matrix.config"
 PLAN_KIND = "h3cspeed.resolution-matrix.plan"
+EXECUTION_KIND = "h3cspeed.resolution-matrix.execution"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PRODUCER = PROJECT_ROOT / "scripts" / "perf002_comfy_trace.py"
 GRID = 32
@@ -754,14 +756,19 @@ def load_existing_plan(path: Path) -> tuple[dict[str, Any], bytes]:
 
 
 def execute_plan(plan: dict[str, Any], output_root: Path, config: dict[str, Any],
-                 config_digest: str) -> None:
-    """Execute only after an explicit CLI opt-in; never claim media acceptance."""
+                 config_digest: str) -> dict[str, Any]:
+    """Execute after explicit opt-in and publish per-engine wall-time evidence."""
     validate_plan(plan, output_root)
     selected = [contract["profile"] for contract in plan["contracts"]]
     expected = build_plan(config, config_digest, output_root, selected)
     if canonical_bytes(plan) != canonical_bytes(expected):
         raise ContractError("execution plan is not bound to the private configuration")
+    summary_path = output_root / "resolution-matrix-execution.json"
+    if summary_path.exists() or summary_path.is_symlink():
+        raise ContractError("execution summary already exists (no-clobber)")
+    _reject_link_chain(summary_path, "resolution-matrix execution summary")
     contracts = {contract["profile"]: contract for contract in plan["contracts"]}
+    executions: list[dict[str, Any]] = []
     for command in plan["commands"]:
         # Re-hash shared inputs immediately before each child.  A long H3 run
         # must not let a modified reference/prompt reach the paired Comfy run.
@@ -786,12 +793,61 @@ def execute_plan(plan: dict[str, Any], output_root: Path, config: dict[str, Any]
         log_path = profile_root / "producer-private.log"
         _reject_link_chain(log_path, f"{contract['label']} private producer log")
         with log_path.open("xb") as stream:
+            started = time.perf_counter()
             returncode = _run_child(
                 command["argv"], stream,
                 float(contract["timeout_seconds"]) + 900)
+            wall_seconds = time.perf_counter() - started
         if returncode != 0:
             raise ContractError(
                 f"{contract['label']} producer failed; inspect its private log")
+        executions.append({
+            "profile": contract["profile"],
+            "label": contract["label"],
+            "engine": command["engine"],
+            "wall_seconds": wall_seconds,
+            "returncode": returncode,
+        })
+    by_profile: list[dict[str, Any]] = []
+    for contract in plan["contracts"]:
+        profile_runs = [item for item in executions
+                        if item["profile"] == contract["profile"]]
+        engine_runs = {item["engine"]: item for item in profile_runs}
+        if set(engine_runs) != {"h3cspeed", "comfyui"}:
+            raise ContractError("execution did not produce both engine timings")
+        h3_wall = float(engine_runs["h3cspeed"]["wall_seconds"])
+        comfy_wall = float(engine_runs["comfyui"]["wall_seconds"])
+        if h3_wall <= 0 or comfy_wall <= 0:
+            raise ContractError("engine wall time must be positive")
+        by_profile.append({
+            "profile": contract["profile"],
+            "label": contract["label"],
+            "output": contract["output"],
+            "engines": {
+                engine: {
+                    "wall_seconds": float(engine_runs[engine]["wall_seconds"]),
+                    "returncode": engine_runs[engine]["returncode"],
+                }
+                for engine in ("h3cspeed", "comfyui")
+            },
+            "h3cspeed_over_comfyui_wall_ratio": h3_wall / comfy_wall,
+        })
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": EXECUTION_KIND,
+        "status": "EXECUTED_UNVERIFIED",
+        "plan_sha256": hashlib.sha256(canonical_bytes(plan)).hexdigest(),
+        "config_sha256": config_digest,
+        "profiles": by_profile,
+        "acceptance": {
+            "process_completion": "PASS",
+            "media_contract": "NOT_RUN",
+            "quality_parity": "NOT_RUN",
+            "speed_alignment": "OBSERVED_ONLY",
+        },
+    }
+    _publish_no_clobber(summary_path, canonical_bytes(summary))
+    return summary
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -844,6 +900,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(f"resolution-matrix dry plan created: {digest}")
     print(f"GPU execution status: {'EXECUTED_UNVERIFIED' if args.execute else 'NOT_RUN'}")
+    if args.execute:
+        print(f"timing summary: {(output / 'resolution-matrix-execution.json').resolve()}")
     return 0
 
 

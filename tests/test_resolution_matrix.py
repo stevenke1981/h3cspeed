@@ -356,6 +356,30 @@ class ResolutionMatrixTests(unittest.TestCase):
                              "producer-private.log").is_file())
             self.assertTrue((output / "240p" / "comfyui" /
                              "producer-private.log").is_file())
+            summary = json.loads(
+                (output / "resolution-matrix-execution.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["kind"], "h3cspeed.resolution-matrix.execution")
+            self.assertEqual(summary["status"], "EXECUTED_UNVERIFIED")
+            self.assertEqual(summary["acceptance"]["speed_alignment"], "OBSERVED_ONLY")
+            self.assertEqual(len(summary["profiles"]), 1)
+            self.assertEqual(set(summary["profiles"][0]["engines"]),
+                             {"h3cspeed", "comfyui"})
+
+    def test_execute_summary_is_no_clobber(self) -> None:
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path, _ = fixture_config(root)
+            output = root / "summary-output"
+            plan_path, _ = runner.create_dry_plan(config_path, output, ("240",))
+            summary = output / "resolution-matrix-execution.json"
+            summary.write_text("protected", encoding="utf-8")
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            config, digest = runner.load_config(config_path)
+            with mock.patch.object(runner, "_run_child") as launched:
+                with self.assertRaisesRegex(runner.ContractError, "summary already exists"):
+                    runner.execute_plan(plan, output, config, digest)
+            launched.assert_not_called()
 
     def test_execute_rejects_tampered_command_and_canonical_png_clobber(self) -> None:
         runner = load_runner()

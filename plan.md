@@ -633,6 +633,9 @@ overrides so native execution defaults to `render == output`, and the runner
 is fail-closed against resize flags,
 protected output roots, stale plans, child-process timeout descendants, and
 unverified Windows private-output ACLs.
+An explicit `--execute` also publishes per-profile H3/Comfy wall-time ratios
+as `OBSERVED_ONLY`; media, quality, and counterbalanced speed gates remain
+separate acceptance steps.
 
 The first real 240p/22-frame smoke passed media/audio/visual/Sage checks. The
 whole first-run command measured 498.1 s for h3cspeed (including sidecar

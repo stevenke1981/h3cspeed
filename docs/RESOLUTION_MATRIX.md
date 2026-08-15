@@ -72,10 +72,14 @@ An existing output directory without that plan, or with a stale/non-canonical
 plan, fails closed. A fresh one-command `--execute` remains supported and first
 publishes the same immutable dry plan.
 
-`--execute` only proves that the child processes completed and wrote their
-private outputs. It does not mark media, scheduler, audio, visual quality, or
-H3-vs-Comfy parity as passed. Those require ffprobe, full ffmpeg decode,
-audio/non-silent checks, profile traces, and visual inspection per profile.
+`--execute` publishes `resolution-matrix-execution.json` with one wall-time
+entry for each engine in each selected profile, plus an observed
+`h3cspeed_over_comfyui_wall_ratio`. This is process-completion evidence only;
+it does not mark media, scheduler, audio, visual quality, or H3-vs-Comfy
+parity as passed. Those require ffprobe, full ffmpeg decode, audio/non-silent
+checks, profile traces, and visual inspection per profile. The summary labels
+speed as `OBSERVED_ONLY`; it never converts a single ordered run into a formal
+counterbalanced speed-alignment result.
 The 480p native H3 path has previously exceeded a one-hour timeout, and 720p
 may take hours or run out of 8 GiB VRAM; timeout/OOM is recorded as a failure,
 never silently replaced by a lower internal render.
