@@ -570,16 +570,43 @@ static int release_tensor_device_locked(h3_gpu *gpu, h3_gpu_tensor *tensor,
 }
 
 static h3_gpu_tensor *eviction_candidate_locked(h3_gpu *gpu,
-                                                 h3_gpu_tensor *protected_tensor) {
+                                                 h3_gpu_tensor *protected_tensor,
+                                                 int prefer_fenced) {
+    h3_gpu_tensor *fallback = nullptr;
     for (h3_gpu_tensor *candidate = gpu->lru_head; candidate;
          candidate = candidate->lru_next) {
         if (candidate == protected_tensor || !candidate->data ||
             candidate->prefetch_reserved ||
             candidate->pin_epoch == gpu->operation_epoch)
             continue;
-        return candidate;
+        if (!fallback) fallback = candidate;
+        if (!prefer_fenced) return candidate;
+
+        /* Query both fences without blocking.  A candidate with completed
+         * events can be released immediately; a not-ready candidate remains
+         * a safe fallback when no completed candidate exists.  Event-query
+         * errors are treated as not-ready so the normal synchronized release
+         * path remains the single fail-closed error reporter. */
+        int ready_valid = 0;
+        int last_use_valid = 0;
+        cudaEvent_t ready = nullptr;
+        cudaEvent_t last_use = nullptr;
+        pthread_mutex_lock(&candidate->lock);
+        ready_valid = candidate->ready_valid;
+        last_use_valid = candidate->last_use_valid;
+        ready = candidate->ready;
+        last_use = candidate->last_use;
+        pthread_mutex_unlock(&candidate->lock);
+        const cudaError_t ready_status =
+            ready_valid ? cudaEventQuery(ready) : cudaSuccess;
+        const cudaError_t last_use_status =
+            last_use_valid ? cudaEventQuery(last_use) : cudaSuccess;
+        if (ready_status == cudaSuccess && last_use_status == cudaSuccess) {
+            gpu->fence_ready_evictions++;
+            return candidate;
+        }
     }
-    return nullptr;
+    return fallback;
 }
 
 static int allocation_fits_locked(h3_gpu *gpu, size_t device_bytes,
@@ -614,7 +641,8 @@ static int evict_until_fit_locked(h3_gpu *gpu, size_t device_bytes,
             if (!weight_reuse_discard_locked(gpu, 0)) return 0;
             continue;
         }
-        h3_gpu_tensor *candidate = eviction_candidate_locked(gpu, protected_tensor);
+        h3_gpu_tensor *candidate = eviction_candidate_locked(
+            gpu, protected_tensor, 1);
         if (!candidate) {
             char detail[320];
             const size_t requested_bytes = weight_bytes ? weight_bytes : device_bytes;
@@ -646,7 +674,7 @@ static int trim_offload_cache_locked(h3_gpu *gpu) {
             if (!weight_reuse_discard_locked(gpu, 0)) return 0;
             continue;
         }
-        h3_gpu_tensor *candidate = eviction_candidate_locked(gpu, nullptr);
+        h3_gpu_tensor *candidate = eviction_candidate_locked(gpu, nullptr, 1);
         if (!candidate) {
             h3cspeed_set_error(
                 gpu, "CUDA offload cache trim",
@@ -707,7 +735,8 @@ static int device_allocate_locked(h3_gpu *gpu, void **pointer, size_t bytes,
             if (!weight_reuse_discard_locked(gpu, 0)) return 0;
         }
         h3_gpu_tensor *candidate = nullptr;
-        while ((candidate = eviction_candidate_locked(gpu, protected_tensor))) {
+        while ((candidate = eviction_candidate_locked(
+                    gpu, protected_tensor, 1))) {
             if (!release_tensor_device_locked(
                     gpu, candidate, 1, 1,
                     H3CSPEED_PROFILE_EVICTION_CAPACITY_LRU)) return 0;

@@ -343,6 +343,7 @@ int main(void) {
     if (ok) ok = check_tensor(tensors[0], 0, tensor_bytes, chunk_bytes);
     if (ok) {
         CHECK(gpu->offload_evictions >= 1);
+        CHECK(gpu->fence_ready_evictions >= 1);
         CHECK(gpu->offload_uploads >= 6);
         CHECK(gpu->file_fallback_reads >= 6);
         CHECK(gpu->weight_reuse_stores >= 1);
@@ -358,9 +359,9 @@ int main(void) {
         CHECK(fixture_hash_after == fixture_hash_before);
         if (trace_requested) {
             CHECK(timeline_pass == 1);
-            printf("{\"kind\":\"h3cspeed.cuda.refill_timeline\",\"h2d_overlap_ms\":%.6f,\"host_read_ms\":%.6f,\"chunks\":%" PRIu64 ",\"h2d_overlap\":\"PASS\",\"host_read_nested_in_compute_window\":\"PASS\"}\n",
+            printf("{\"kind\":\"h3cspeed.cuda.refill_timeline\",\"h2d_overlap_ms\":%.6f,\"host_read_ms\":%.6f,\"chunks\":%" PRIu64 ",\"fence_ready_evictions\":%" PRIu64 ",\"h2d_overlap\":\"PASS\",\"host_read_nested_in_compute_window\":\"PASS\"}\n",
                    timeline_h2d_overlap_ms, timeline_host_read_ms,
-                   timeline_chunks);
+                   timeline_chunks, gpu->fence_ready_evictions);
         }
     }
     for (size_t index = 0; index < tensor_count; index++)

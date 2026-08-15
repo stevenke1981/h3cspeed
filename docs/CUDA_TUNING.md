@@ -89,6 +89,15 @@ cudaMalloc pair but does not remove logical LRU eviction or weight upload.
 The stderr memory summary reports weight-reuse hits/stores as a churn
 diagnostic; it is not an end-to-end speedup claim.
 
+Capacity eviction now performs a non-blocking fence scan before selecting the
+oldest eligible LRU weight. Candidates whose upload-ready and last-use events
+are already complete are released first, which avoids making the host wait on
+an older in-flight candidate when another safe weight is available. If every
+eligible candidate still has a pending fence, the original synchronized
+release path remains the fail-closed fallback; no tensor is evicted before both
+events complete. `fence_ready_evictions` is a focused-test diagnostic only and
+does not change logical eviction or upload counters.
+
 The PERF-006 upload-wait trace measures the device interval associated with
 the compute stream waiting for a weight's upload-ready event. It does not
 relabel compute, file-read, eviction or final-drain time as upload-ready wait.

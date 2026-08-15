@@ -170,6 +170,7 @@ typedef struct {
         typedef void *cudaEvent_t;
         typedef int cudaDataType_t;
         static const cudaError_t cudaSuccess=0;
+        static const cudaError_t cudaErrorNotReady=34;
         #ifndef CUDART_INF_F
         #define CUDART_INF_F (__builtin_inff())
         #endif
@@ -201,6 +202,7 @@ typedef struct {
         cudaError_t cudaEventDestroy(cudaEvent_t);
         cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t = nullptr);
         cudaError_t cudaEventSynchronize(cudaEvent_t);
+        cudaError_t cudaEventQuery(cudaEvent_t);
         cudaError_t cudaEventElapsedTime(float *, cudaEvent_t, cudaEvent_t);
         cudaError_t cudaMalloc(void **, size_t);
         cudaError_t cudaFree(void *);

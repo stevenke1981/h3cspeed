@@ -64,6 +64,10 @@ Acceptance:
   bytes remain inside device-live VRAM accounting and are drained at teardown;
 - the focused run reports nonzero reuse hits/stores without changing logical
   upload, reload, or eviction counters.
+- capacity eviction prefers an eligible tensor whose ready and last-use CUDA
+  events are already complete, while retaining the synchronized fallback when
+  no such tensor exists; the focused test reports a nonzero
+  `fence_ready_evictions` diagnostic.
 
 Run:
 

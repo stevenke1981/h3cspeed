@@ -159,6 +159,10 @@ struct h3_gpu {
     uint64_t offload_upload_bytes;
     uint64_t offload_evictions;
     uint64_t offload_evicted_bytes;
+    /* Number of capacity evictions that selected a candidate whose ready and
+     * last-use fences were already complete.  This is a diagnostic for the
+     * non-blocking candidate preference; logical LRU counts remain unchanged. */
+    uint64_t fence_ready_evictions;
     uint64_t file_fallback_reads;
     uint64_t file_fallback_bytes;
     uint64_t host_cache_evictions;

@@ -681,3 +681,12 @@ preserved 40.1667 GiB upload traffic and did not materially reduce DiT
 eviction time. The next source change must target eviction/file-read
 serialization rather than another unvalidated cache-size knob. The 480p and
 720p real profiles remain `NOT_RUN`.
+
+The allocator follow-up now scans eligible LRU weights with non-blocking
+ready/last-use event queries and prefers a fully fenced candidate. This is a
+correctness-preserving host-stall reduction: if no candidate is fenced, the
+existing synchronized eviction path is used. The tiny 512 MiB file-backed
+focused test reported two fenced-candidate selections; CTest disabled/async
+both passed, and Compute Sanitizer memcheck/racecheck reported zero errors or
+hazards. No full-model wall-time claim is attached to this slice; matched
+240p/480p/720p speed gates remain separate.

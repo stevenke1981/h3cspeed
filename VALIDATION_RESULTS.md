@@ -678,3 +678,22 @@ calling this an architecture-wide production release.
   working set. The 480p and 720p native profiles, generated-INT8 cycling,
   pageable-allocation failure injection, fixed cold-cache >=50% upload-wait
   reduction and 124-frame/8-step gates remain `NOT_RUN`.
+
+## Fence-aware DiT eviction candidate slice (2026-08-16)
+
+- The CUDA allocator now queries eligible LRU tensors without blocking and
+  prefers one whose upload-ready and last-use events are both complete. If no
+  candidate is fenced, the existing synchronized release path remains the
+  fail-closed fallback; no event ordering or logical LRU counter is bypassed.
+- On the RTX 3070 Ti (driver 596.36, CUDA 13.2, sm86), the tiny 512 MiB
+  `ram+file` fixture completed both `cuda_offload_disabled` and
+  `cuda_offload_async_refill` CTest variants (2/2). The async run used 4 MiB
+  staging, 128 MiB weight cache, 16 DMA chunks, and reported
+  `fence_ready_evictions=2`; canaries, file fallback and reuse-pool checks
+  passed.
+- The same binary under Compute Sanitizer reported memcheck `0 errors` and
+  racecheck `0 hazards, 0 errors, 0 warnings`. Portable overlay CTest remained
+  21/21, API coverage 103/103, and source syntax lint passed with the LLVM
+  clang toolchain. This is an allocator host-stall/correctness slice only; no
+  full-model speedup is claimed and 480p/720p, generated-INT8, pageable
+  failure, fixed cold-cache A/B and 124-frame/8-step gates remain `NOT_RUN`.
