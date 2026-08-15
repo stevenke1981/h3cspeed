@@ -11,6 +11,8 @@
 # Runtime media, traces, logs, and local validation output.
 /outputs/
 **/outputs/
+# Codex-generated benchmark fixtures remain local/private; bind them by hash.
+/output/imagegen/
 *.log
 *.trace
 *.dmp

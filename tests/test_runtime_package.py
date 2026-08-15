@@ -30,12 +30,14 @@ class RuntimePackageTest(unittest.TestCase):
         self.assertIn("scripts/run_perf002_smoke.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/perf002_comfy_trace.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/run_perf007_h3.ps1", package.COMMON_SCRIPTS)
+        self.assertIn("scripts/run_resolution_matrix.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/validate_perf002_manifest.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/validate_perf006_ab.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/h3_model_info.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/h3_model_metadata.py", package.COMMON_SCRIPTS)
         self.assertIn("scripts/h3_safetensors_info.py", package.COMMON_SCRIPTS)
         self.assertIn("docs/PERF002_BENCHMARK.md", package.COMMON_FILES)
+        self.assertIn("docs/RESOLUTION_MATRIX.md", package.COMMON_FILES)
 
     def test_forbidden_model_and_conditioning_payloads_fail_closed(self) -> None:
         package = load_module()

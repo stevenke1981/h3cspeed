@@ -42,6 +42,7 @@ CONTRACT = {"width": 864, "height": 480, "frames": 22, "fps": 24,
             "steps": 2, "layers": 50, "seed": 42}
 SUPPORTED_FRAME_COUNTS = (22, 124)
 T8_NODE_DIRECTORY = "comfyui-minimax-h3-audio-T8"
+MAX_MATRIX_PIXELS = 768 * 1344
 
 
 class TraceError(RuntimeError):
@@ -71,6 +72,22 @@ def _regular(path: Path, label: str) -> Path:
     if not path.is_absolute() or path.is_symlink() or not path.is_file():
         raise TraceError(f"{label} must be an absolute regular file")
     return path
+
+
+def _png_dimensions(path: Path, label: str = "PNG") -> tuple[int, int]:
+    """Read PNG dimensions without a decoder or an implicit resize."""
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise TraceError(f"could not read {label}") from error
+    if (len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or
+            data[12:16] != b"IHDR"):
+        raise TraceError(f"{label} is not a valid PNG")
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    if width <= 0 or height <= 0:
+        raise TraceError(f"{label} has invalid dimensions")
+    return width, height
 
 
 def _directory(path: Path, label: str) -> Path:
@@ -253,9 +270,20 @@ def _validate_sigma_grid(values: list[float], label: str, steps: int) -> None:
         raise TraceError(f"Comfy {label} sigma grid is invalid")
 
 
+def _validate_matrix_dimensions(width: int, height: int) -> None:
+    """Validate a native H3/Comfy resolution without implicit scaling."""
+    if (width < 64 or height < 64 or width % 32 != 0 or height % 32 != 0 or
+            width * height > MAX_MATRIX_PIXELS):
+        raise TraceError(
+            "resolution-matrix dimensions must be >=64, 32-pixel aligned, "
+            f"and no larger than {MAX_MATRIX_PIXELS} pixels")
+
+
 def _build_workflow(image_name: str, prompt: str, model: str, clip: str,
                     video_vae: str, audio_vae: str,
-                    frames: int = CONTRACT["frames"]
+                    frames: int = CONTRACT["frames"],
+                    width: int = CONTRACT["width"],
+                    height: int = CONTRACT["height"]
                     ) -> dict[str, dict[str, Any]]:
     """Build the first-frame FL2VA I2V graph for an H3-aligned frame count."""
     if frames not in SUPPORTED_FRAME_COUNTS:
@@ -270,7 +298,7 @@ def _build_workflow(image_name: str, prompt: str, model: str, clip: str,
         "5": {"class_type": "LoadImage", "inputs": {"image": image_name}},
         "6": {"class_type": "MiniMaxH3AudioConditioningT8", "inputs": {
             "clip": ["2", 0], "video_vae": ["3", 0], "audio_vae": ["4", 0],
-            "prompt": prompt, "width": 864, "height": 480, "length": frames,
+            "prompt": prompt, "width": width, "height": height, "length": frames,
             "task_type": "I2VA", "audio_mode": "native",
             "audio_denoise_strength": 1.0, "add_source_as_reference": False,
             "prompt_primary_audio_ordinal": 0, "strict_prompt_tags": True,
@@ -583,12 +611,19 @@ def run(args: argparse.Namespace) -> None:
     media = _new_destination(Path(args.output_media), "output media")
     scheduler = _new_destination(Path(args.scheduler_trace), "scheduler trace")
     attention = _new_destination(Path(args.attention_trace), "attention trace")
-    if (args.width != CONTRACT["width"] or args.height != CONTRACT["height"] or
-            args.frames not in SUPPORTED_FRAME_COUNTS or
-            args.steps != CONTRACT["steps"]):
+    if args.frames not in SUPPORTED_FRAME_COUNTS or args.steps != CONTRACT["steps"]:
+        raise TraceError("Comfy producer requires 2 steps and an H3-aligned "
+                         "22-frame or 124-frame contract")
+    if args.resolution_matrix:
+        _validate_matrix_dimensions(args.width, args.height)
+        if _png_dimensions(reference, "reference PNG") != (args.width, args.height):
+            raise TraceError(
+                "resolution-matrix reference PNG must exactly match output dimensions; "
+                "implicit stretch/crop is forbidden")
+    elif args.width != CONTRACT["width"] or args.height != CONTRACT["height"]:
         raise TraceError(
-            "Comfy producer requires 864x480, 2 steps, and an H3-aligned "
-            "22-frame or 124-frame contract")
+            "Comfy PERF-002 producer requires 864x480; use "
+            "--resolution-matrix for a native resolution profile")
     runtime = _private_directory(Path(args.runtime_dir), "private runtime")
     for name in ("output", "input", "temp", "user"):
         child = runtime / name
@@ -624,7 +659,8 @@ def run(args: argparse.Namespace) -> None:
         history = _queue_and_wait(
             base, _build_workflow(image_destination.name, prompt, model_names["model"],
                                   model_names["clip"], model_names["video_vae"],
-                                  model_names["audio_vae"], args.frames), args.timeout,
+                                  model_names["audio_vae"], args.frames,
+                                  args.width, args.height), args.timeout,
             str(uuid.uuid4()), state)
         source_media = _find_media(history, runtime / "output")
         if not (state["setup_success"] and state["sample_success"] and
@@ -635,7 +671,9 @@ def run(args: argparse.Namespace) -> None:
                 state["sage_attempts"] > 0 and state["all_bf16"] and
                 state["fallbacks"] == 0):
             raise TraceError("Comfy runtime completed without complete scheduler/Sage proof")
-        runtime_contract = {**CONTRACT, "frames": args.frames}
+        runtime_contract = {**CONTRACT, "width": args.width, "height": args.height,
+                            "frames": args.frames,
+                            "resolution_matrix": bool(args.resolution_matrix)}
         scheduler_report = {"schema_version": 1, "engine": "comfyui",
             "sampler": "dual_clock_euler", "schedule": "native_flow",
             "video_shift": 12.0, "audio_shift": 3.0, **runtime_contract,
@@ -678,7 +716,9 @@ def run(args: argparse.Namespace) -> None:
                 except FileNotFoundError:
                     pass
         raise
-    print(f"PERF-002C ComfyUI real {args.frames}-frame smoke complete")
+    label = "resolution-matrix" if args.resolution_matrix else "PERF-002C"
+    print(f"{label} ComfyUI real {args.width}x{args.height} "
+          f"{args.frames}-frame smoke complete")
 
 
 def main() -> int:
@@ -702,6 +742,8 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--frames", type=int, default=22)
     parser.add_argument("--steps", type=int, default=2)
+    parser.add_argument("--resolution-matrix", action="store_true",
+                        help="allow a native 32-pixel-aligned resolution profile")
     args = parser.parse_args()
     try:
         run(args)

@@ -33,6 +33,8 @@ class QuantizedSidecarV2Tests(unittest.TestCase):
         source = Path(sidecar.__file__).read_text(encoding="utf-8")
         self.assertIn('TemporaryDirectory(prefix="h3cspeed-keyframe-")', source)
         self.assertIn("Image.open(io.BytesIO(data))", source)
+        self.assertIn('filter_graph = "format=rgb24"', source)
+        self.assertIn("source_dimensions", source)
         self.assertIn("canonical_bytes = [path.read_bytes()", source)
         self.assertIn("destination.is_symlink()", source)
         self.assertNotIn('destination.name + ".tmp.png"', source)

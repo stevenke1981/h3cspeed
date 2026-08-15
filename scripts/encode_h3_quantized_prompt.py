@@ -220,9 +220,25 @@ def _canonicalize_keyframe(source: Path, destination: Path, *, is_first: bool,
                            width: int, height: int) -> Path:
     """Create the exact RGB keyframe consumed by both Comfy and native H3."""
     ffmpeg = os.environ.get("H3_FFMPEG", "ffmpeg")
-    filter_graph = (f"scale={width}:{height}:flags=lanczos" if is_first else
-                    f"scale={width}:{height}:force_original_aspect_ratio=increase:"
-                    f"flags=lanczos,crop={width}:{height}")
+    source_dimensions: tuple[int, int] | None = None
+    if is_first:
+        try:
+            from PIL import Image
+            with Image.open(source) as image:
+                source_dimensions = tuple(int(value) for value in image.size)
+        except Exception as exc:
+            raise SidecarError(f"cannot inspect first-frame dimensions: {exc}") from exc
+    # Matrix profiles bind an exact-size PNG.  Use a format-only conversion for
+    # that case so the H3 canonical first frame has the same pixels instead of
+    # passing through a nominal scale filter.  Legacy/non-exact inputs retain
+    # the existing resize/crop behavior and are not part of the no-stretch gate.
+    if is_first and source_dimensions == (width, height):
+        filter_graph = "format=rgb24"
+    elif is_first:
+        filter_graph = f"scale={width}:{height}:flags=lanczos"
+    else:
+        filter_graph = (f"scale={width}:{height}:force_original_aspect_ratio=increase:"
+                        f"flags=lanczos,crop={width}:{height}")
     destination = destination.expanduser().absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_symlink():

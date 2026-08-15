@@ -25,6 +25,7 @@ param(
     [switch]$LayerMajor,
     [switch]$AsyncRefill,
     [switch]$DitPrefetch,
+    [switch]$ResolutionMatrix,
     [switch]$UseExistingSidecar
 )
 
@@ -61,8 +62,34 @@ function Get-Sha256([string]$Path) {
     }
 }
 
-if ($Width -ne 864 -or $Height -ne 480) {
+function Get-PngDimensions([string]$Path) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 24 -or
+        $bytes[0] -ne 0x89 -or $bytes[1] -ne 0x50 -or
+        $bytes[2] -ne 0x4e -or $bytes[3] -ne 0x47 -or
+        $bytes[4] -ne 0x0d -or $bytes[5] -ne 0x0a -or
+        $bytes[6] -ne 0x1a -or $bytes[7] -ne 0x0a -or
+        $bytes[12] -ne 0x49 -or $bytes[13] -ne 0x48 -or
+        $bytes[14] -ne 0x44 -or $bytes[15] -ne 0x52) {
+        throw "first-frame must be a valid PNG"
+    }
+    $width = (([int]$bytes[16] -shl 24) -bor
+              ([int]$bytes[17] -shl 16) -bor
+              ([int]$bytes[18] -shl 8) -bor [int]$bytes[19])
+    $height = (([int]$bytes[20] -shl 24) -bor
+               ([int]$bytes[21] -shl 16) -bor
+               ([int]$bytes[22] -shl 8) -bor [int]$bytes[23])
+    if ($width -le 0 -or $height -le 0) { throw "first-frame PNG has invalid dimensions" }
+    return @($width, $height)
+}
+
+if (-not $ResolutionMatrix -and ($Width -ne 864 -or $Height -ne 480)) {
     throw "PERF-007 requires the native 864x480 480p contract"
+}
+if ($ResolutionMatrix -and ($Width -lt 64 -or $Height -lt 64 -or
+    ($Width % 32) -ne 0 -or ($Height % 32) -ne 0 -or
+    ($Width * $Height) -gt (768 * 1344))) {
+    throw "resolution matrix requires dimensions >=64, 32-pixel aligned, and within the H3 canvas limit"
 }
 if (($RenderWidth -eq 0) -ne ($RenderHeight -eq 0)) {
     throw "RenderWidth and RenderHeight must be set together"
@@ -70,6 +97,9 @@ if (($RenderWidth -eq 0) -ne ($RenderHeight -eq 0)) {
 if ($RenderWidth -eq 0) {
     $RenderWidth = $Width
     $RenderHeight = $Height
+}
+if ($ResolutionMatrix -and ($RenderWidth -ne $Width -or $RenderHeight -ne $Height)) {
+    throw "resolution matrix forbids internal downscale or output stretching"
 }
 if ($RenderWidth -lt 32 -or $RenderHeight -lt 32 -or
     ($RenderWidth % 32) -ne 0 -or ($RenderHeight % 32) -ne 0 -or
@@ -97,6 +127,12 @@ $binary = Resolve-File $BinaryPath "h3cspeed binary"
 $output = [IO.Path]::GetFullPath($Output)
 $sidecar = [IO.Path]::GetFullPath($SidecarPath)
 $profile = [IO.Path]::GetFullPath($ProfileDir)
+if ($ResolutionMatrix) {
+    $pngDimensions = Get-PngDimensions $firstFrame
+    if ($pngDimensions[0] -ne $Width -or $pngDimensions[1] -ne $Height) {
+        throw "resolution matrix first-frame PNG must exactly match output dimensions"
+    }
+}
 if (Test-Path -LiteralPath $output) { throw "output already exists: $output" }
 if (-not $UseExistingSidecar -and (Test-Path -LiteralPath $sidecar)) {
     throw "sidecar already exists: $sidecar"
@@ -204,6 +240,7 @@ try {
         height = $Height
         render_width = $RenderWidth
         render_height = $RenderHeight
+        resolution_matrix = [bool]$ResolutionMatrix
         steps = $Steps
         layer_major = [bool]$LayerMajor
         async_refill = [bool]$AsyncRefill

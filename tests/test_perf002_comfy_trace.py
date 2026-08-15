@@ -50,6 +50,18 @@ class Perf002ComfyTraceTests(unittest.TestCase):
         self.assertEqual(workflow["6"]["inputs"]["length"], 124)
         self.assertEqual(workflow["12"]["inputs"]["fps"], 24.0)
 
+    def test_workflow_supports_native_resolution_matrix_dimensions(self) -> None:
+        producer = load_module()
+        workflow = producer._build_workflow(
+            "reference.png", "a presenter speaks", "model.safetensors",
+            "clip.safetensors", "video.safetensors", "audio.safetensors",
+            frames=124, width=448, height=256)
+        self.assertEqual(workflow["6"]["inputs"]["width"], 448)
+        self.assertEqual(workflow["6"]["inputs"]["height"], 256)
+        producer._validate_matrix_dimensions(1280, 704)
+        with self.assertRaisesRegex(producer.TraceError, "32-pixel aligned"):
+            producer._validate_matrix_dimensions(854, 480)
+
     def test_publish_json_is_no_clobber(self) -> None:
         producer = load_module()
         with tempfile.TemporaryDirectory() as temporary:

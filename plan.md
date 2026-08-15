@@ -594,3 +594,21 @@ The next performance slice must preserve the 576x320-or-native visual gate:
 run a matched 576x320 source-optimized pair first, then revisit exact-native
 864x480. Do not infer native H3/ComfyUI quality parity from the low-resolution
 candidate.
+
+## 13. Native resolution matrix (240p/480p/720p)
+
+The resolution matrix is a separate 2-step throughput track. It uses native
+H3-grid profiles 448x256, 864x480, and 1280x704, with exact per-profile PNG
+references, `render == output`, 124 frames, 24 fps, 50 layers, and seed 42.
+The paired dry-run/execute contract is implemented in
+`scripts/run_resolution_matrix.py`; it is fail-closed against resize flags,
+protected output roots, stale plans, child-process timeout descendants, and
+unverified Windows private-output ACLs.
+
+The first real 240p/22-frame smoke passed media/audio/visual/Sage checks. The
+whole first-run command measured 498.1 s for h3cspeed (including sidecar
+generation) and 447.9 s for ComfyUI; this is an observation, not a matched
+cold-cache speed claim. H3's engine-reported work was 248.93 s and ComfyUI's
+prompt execution was 345.38 s, but those clocks have different scope. The H3
+MP4 was larger because its encoder uses CRF18/AAC192k while ComfyUI preserves
+its own SaveVideo defaults. The 480p and 720p real profiles remain `NOT_RUN`.

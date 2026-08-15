@@ -25,7 +25,7 @@ FORBIDDEN_SUFFIXES = {
 COMMON_FILES = (
     "LICENSE", "THIRD_PARTY_NOTICES.md", "PROVENANCE.md", "VERSION",
     "README.md", "README.zh-TW.md", "docs/PERF002_BENCHMARK.md",
-    "docs/PERF007_TALKING_BENCHMARK.md",
+    "docs/PERF007_TALKING_BENCHMARK.md", "docs/RESOLUTION_MATRIX.md",
 )
 COMMON_SCRIPTS = (
     "scripts/doctor.py",
@@ -42,6 +42,7 @@ COMMON_SCRIPTS = (
     "scripts/run_perf002_smoke.py",
     "scripts/perf002_comfy_trace.py",
     "scripts/run_perf007_h3.ps1",
+    "scripts/run_resolution_matrix.py",
     "scripts/validate_perf002_manifest.py",
     "scripts/validate_perf006_ab.py",
     "scripts/h3_model_info.py",
