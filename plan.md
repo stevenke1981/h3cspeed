@@ -578,6 +578,19 @@ size while preserving the 864x480 output container. The 576x320 candidate
 completed in 1,381.070846 seconds with usable but softer sampled frames; the
 288x160 candidate completed in 366.712963 seconds but failed visual quality
 because of facial deformation and horizontal seams. These are capacity/speed
-observations, not native-quality parity. The next performance slice is a
-DiT-side optimization that preserves the 576x320-or-native quality gate; do
-not infer a native H3/ComfyUI match from the low-resolution candidate.
+observations, not native-quality parity.
+
+The first DiT-side optimization is now implemented and measured. The
+one-ahead scheduler reserves the future ConvRot block only after the current
+block has enqueued its work, avoiding premature LRU eviction of current
+weights. The opt-in prefetch route also defaults its automatic host cache to
+85% of available RAM (with the existing 64 GiB cap, 2 GiB headroom and
+explicit override). On the same 288x160-internal contract, the new run took
+306.180956 s versus 366.712963 s previously, with identical media SHA and
+full media/audio decode. This is a 16.51% speed improvement for the
+speed-only preset and remains below the native-quality evidence bar.
+
+The next performance slice must preserve the 576x320-or-native visual gate:
+run a matched 576x320 source-optimized pair first, then revisit exact-native
+864x480. Do not infer native H3/ComfyUI quality parity from the low-resolution
+candidate.

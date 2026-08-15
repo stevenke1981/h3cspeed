@@ -582,3 +582,27 @@ calling this an architecture-wide production release.
   native H3/ComfyUI speed and quality parity gate therefore remains
   `NOT_RUN`; further optimization must preserve the 576x320-or-native visual
   quality gate.
+- A source-level follow-up addressed the measured bottleneck in that run. The
+  one-ahead ConvRot scheduler had reserved the next block before the current
+  block consumed its weights, which increased LRU eviction and file rereads.
+  Reservation now occurs after current-block enqueue, and the opt-in
+  `H3_CUDA_DIT_PREFETCH=1` policy raises the automatic host-cache percentage
+  from 60% to 85% of available RAM (the 64 GiB cap, 2 GiB headroom clamp and
+  explicit `H3_CUDA_HOST_CACHE_MIB` override are unchanged).
+- Using `build-perf008/h3cspeed.exe` SHA-256
+  `EFEE3265476996F569F44DDD5BE47A83B58CBD2467A3CC5ED63EB73986B33FA9`, with
+  the same manifest/sidecar/fixture and `H3_CUDA_HOST_CACHE_MIB` unset, the
+  288x160-internal 124-frame/2-step candidate completed in 306.180956 s.
+  This is 16.51% below the previous 366.712963 s and 8.19% below the
+  333.50 s ComfyUI model-generation time. The H3 DiT profile measured
+  123.723450 s file-read time, 78.161090 s eviction time, 0 file-fallback
+  reads and an 18.51 GiB host-cache peak; these counters identify the
+  reduced cache churn but are not a native-quality speed claim.
+- The resulting MP4 SHA-256 is
+  `67570C3E60A9DFF369369613AFA1EF2F32667E83F0355DE39CE48E2C21BA4ADA`,
+  identical to the previous deterministic speed candidate. H.264/AAC,
+  864x480, 124 frames/24 fps, 5.166667 s, full FFmpeg decode and non-silent
+  audio (mean -32.2 dB, max -15.2 dB) passed. The internal render remains
+  288x160 with the previously recorded facial deformation and seam defects,
+  so 576x320/native visual parity and the exact-native timeout are still
+  `NOT_RUN`.

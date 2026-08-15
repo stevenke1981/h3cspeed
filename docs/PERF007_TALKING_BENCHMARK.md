@@ -84,3 +84,37 @@ the 8 GiB card. It improves capacity/completion, not enough throughput to
 close the native-quality gap. A real native H3 speedup still requires a
 matched DiT kernel/offload optimization and must be re-measured with the same
 media QA gates.
+
+## 2026-08-15 source optimization follow-up
+
+The first profile identified the dominant cost as offload churn rather than
+SageAttention: the 288x160/124-frame candidate spent 158.843230 seconds
+reading weights and 98.054369 seconds in eviction, with 334 file-fallback
+reads. The prefetch scheduler was reserving the next ConvRot block before the
+current block had consumed its weights. That allowed the LRU to evict current
+weights and immediately reread them.
+
+The source fix moves the future-block reservation until after the current
+block has enqueued its work, while retaining the existing ready/last-use event
+fences. For the opt-in prefetch route, the automatic host-cache policy also
+uses 85% (instead of 60%) of currently available RAM, still capped at 64 GiB
+and clamped to leave 2 GiB free; an explicit `H3_CUDA_HOST_CACHE_MIB` value
+continues to take precedence.
+
+With the new `build-perf008` binary (`EFEE3265476996F569F44DDD5BE47A83B58CBD2467A3CC5ED63EB73986B33FA9`),
+the same bound-host 288x160 internal / 864x480 output / 124-frame / 2-step
+contract completed in **306.180956 seconds** with the environment variable
+`H3_CUDA_HOST_CACHE_MIB` unset. The prior 366.712963-second run therefore
+improved by 16.51%, and this speed-only candidate is about 8.19% faster than
+the 333.50-second ComfyUI graph. The H3 profile recorded 123.723450 seconds
+of file reads, 78.161090 seconds of eviction, 0 file-fallback reads and an
+18.51 GiB host-cache peak.
+
+The output remains deterministic (MP4 SHA-256
+`67570c3e60a9dff369369613afa1ef2f32667e83f0355de39ce48e2c21ba4ada`), and
+FFprobe/full-decode/audio checks passed: H.264/AAC, 864x480, 124 frames,
+24 fps, 5.166667 seconds, stereo 32 kHz, mean volume -32.2 dB and max
+-15.2 dB. This does **not** close the native-quality gate: the internal
+render is still 288x160 and retains the previously recorded facial
+deformation/seam problems. A matched 576x320 or native-quality run remains
+the next quality-preserving benchmark.

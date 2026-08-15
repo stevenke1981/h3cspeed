@@ -2524,11 +2524,6 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
                 prefetch_future = next_active_block(dit, block);
                 future_norm1_consumed = fuse_next_attention &&
                     prefetch_future == next_block;
-                if (prefetch_future < H3_DIT_BLOCKS &&
-                    !reserve_convrot_block(
-                        dit, prefetch_future, future_norm1_consumed,
-                        error, error_size))
-                    return fence_prefetch_failure(dit, error, error_size);
             }
             int block_ok = run_block(
                 dit, block, step, weight, fused_token_adaln,
@@ -2549,6 +2544,11 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
                 }
                 return 0;
             }
+            if (prefetch_future < H3_DIT_BLOCKS &&
+                !reserve_convrot_block(
+                    dit, prefetch_future, future_norm1_consumed,
+                    error, error_size))
+                return fence_prefetch_failure(dit, error, error_size);
             if (prefetch_future < H3_DIT_BLOCKS &&
                 !upload_convrot_block(
                     dit, prefetch_future, future_norm1_consumed,

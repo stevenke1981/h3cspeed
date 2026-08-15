@@ -122,6 +122,38 @@ static void test_bad_mode_is_rejected(void) {
     CHECK(strstr(error, "H3_CUDA_OFFLOAD") != NULL);
 }
 
+static void test_dit_prefetch_raises_default_host_cache(void) {
+    h3cspeed_offload_policy baseline;
+    h3cspeed_offload_policy prefetch;
+    char error[256];
+    h3cspeed_offload_overrides values = {
+        "ram", NULL, NULL, NULL, NULL, NULL, NULL
+    };
+#if defined(_WIN32)
+    CHECK(_putenv_s("H3_CUDA_DIT_PREFETCH", "0") == 0);
+#else
+    CHECK(setenv("H3_CUDA_DIT_PREFETCH", "0", 1) == 0);
+#endif
+    CHECK(h3cspeed_offload_policy_resolve(
+        8 * GIB, 7 * GIB, 32 * GIB, &values,
+        &baseline, error, sizeof(error)));
+#if defined(_WIN32)
+    CHECK(_putenv_s("H3_CUDA_DIT_PREFETCH", "1") == 0);
+#else
+    CHECK(setenv("H3_CUDA_DIT_PREFETCH", "1", 1) == 0);
+#endif
+    CHECK(h3cspeed_offload_policy_resolve(
+        8 * GIB, 7 * GIB, 32 * GIB, &values,
+        &prefetch, error, sizeof(error)));
+    CHECK(prefetch.host_cache_bytes > baseline.host_cache_bytes);
+    CHECK(prefetch.host_cache_bytes <= 30 * GIB);
+#if defined(_WIN32)
+    CHECK(_putenv_s("H3_CUDA_DIT_PREFETCH", "0") == 0);
+#else
+    CHECK(setenv("H3_CUDA_DIT_PREFETCH", "0", 1) == 0);
+#endif
+}
+
 int main(void) {
     test_3070ti_auto_profile();
     test_large_card_stays_resident_by_default();
@@ -130,6 +162,7 @@ int main(void) {
     test_unsafe_minimum_budgets_are_rejected();
     test_mode_and_boolean_are_case_insensitive();
     test_bad_mode_is_rejected();
+    test_dit_prefetch_raises_default_host_cache();
     puts("offload policy tests passed");
     return 0;
 }

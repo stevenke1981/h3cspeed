@@ -171,7 +171,16 @@ int h3cspeed_offload_policy_resolve(
     policy->weight_cache_bytes = min_u64(default_weight_cache,
                                          policy->vram_budget_bytes / 3);
 
-    uint64_t default_host_cache = system_memory_bytes * 60 / 100;
+    /* The one-ahead DiT path rereads the same file-backed weights when its
+     * conservative cache fills.  It is opt-in and already bounded by the
+     * hard headroom clamp below, so let that path use more of currently
+     * available RAM by default.  An explicit H3_CUDA_HOST_CACHE_MIB override
+     * still wins and is clamped to the same safety limit. */
+    uint64_t host_cache_percent =
+        getenv("H3_CUDA_DIT_PREFETCH") &&
+        !strcmp(getenv("H3_CUDA_DIT_PREFETCH"), "1") ? 85u : 60u;
+    uint64_t default_host_cache =
+        system_memory_bytes * host_cache_percent / 100;
     policy->host_cache_bytes = min_u64(default_host_cache,
                                        UINT64_C(64) * H3_GIB);
     policy->pinned_host_bytes = min_u64(policy->host_cache_bytes,

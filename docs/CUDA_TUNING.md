@@ -129,6 +129,10 @@ final filename without replacing an existing report.
 
 The automatic host cache is 60% of system RAM currently available at context
 creation, capped at 64 GiB and further clamped to leave at least 2 GiB free.
+When the opt-in `H3_CUDA_DIT_PREFETCH=1` path is enabled, the default rises to
+85% of currently available RAM because one-ahead DiT prefetch benefits from
+retaining more file-backed weights; the same 2 GiB headroom clamp still wins.
+An explicit `H3_CUDA_HOST_CACHE_MIB` value always overrides the percentage.
 Under WSL2, available memory is measured inside the WSL VM. Leave enough RAM for
 the Linux kernel, page cache, FFmpeg, CPU-side model data and Windows itself.
 
