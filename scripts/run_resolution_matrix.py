@@ -501,8 +501,7 @@ def validate_plan(value: Any, output_root: Path) -> dict[str, Any]:
     return value
 
 
-def _prepare_private_output(path: Path, profiles: Iterable[str],
-                            config: dict[str, Any]) -> Path:
+def _validate_output_boundary(path: Path, config: dict[str, Any]) -> None:
     _reject_link_chain(path, "private output directory")
     if not path.is_absolute():
         raise ContractError("private output directory must be absolute")
@@ -521,6 +520,11 @@ def _prepare_private_output(path: Path, profiles: Iterable[str],
             continue
         raise ContractError(
             "private output directory must be outside ComfyUI and model roots")
+
+
+def _prepare_private_output(path: Path, profiles: Iterable[str],
+                            config: dict[str, Any]) -> Path:
+    _validate_output_boundary(path, config)
     if path.exists() or path.is_symlink():
         raise ContractError("private output directory must be new (no-clobber)")
     if not path.parent.is_dir() or path.parent.is_symlink():
@@ -577,6 +581,31 @@ $unexpected = @($actual.Access | Where-Object {
 if ($unexpected.Count -ne 0) { exit 13 }
 """
 
+_WINDOWS_VERIFY_PRIVATE_ACL_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$target = $env:H3CSPEED_PRIVATE_OUTPUT_DACL_PATH
+if ([string]::IsNullOrWhiteSpace($target)) { exit 11 }
+$current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$actual = Get-Acl -LiteralPath $target
+if (-not $actual.AreAccessRulesProtected) { exit 12 }
+$unexpected = @($actual.Access | Where-Object {
+    $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+    $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne
+        $current.Value
+})
+if ($unexpected.Count -ne 0) { exit 13 }
+$currentFull = @($actual.Access | Where-Object {
+    $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+    $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq
+        $current.Value -and
+    ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq
+        [Security.AccessControl.FileSystemRights]::FullControl -and
+    ($_.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ContainerInherit) -ne 0 -and
+    ($_.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ObjectInherit) -ne 0
+})
+if ($currentFull.Count -eq 0) { exit 17 }
+"""
+
 
 def _windows_system_directory() -> Path:
     buffer = ctypes.create_unicode_buffer(32768)
@@ -586,8 +615,7 @@ def _windows_system_directory() -> Path:
     return Path(buffer.value)
 
 
-def _restrict_windows_private_acl(path: Path) -> None:
-    """Apply and verify a current-user-only inheritable DACL, or fail closed."""
+def _run_system_acl_script(path: Path, script: str) -> None:
     # Dry planning must never execute a config-selected producer.  ACL setup is
     # therefore bound to the OS-owned Windows PowerShell under System32.
     system_directory = _windows_system_directory()
@@ -604,12 +632,43 @@ def _restrict_windows_private_acl(path: Path) -> None:
     environment["PSModulePath"] = str(windows_powershell / "Modules")
     completed = subprocess.run(
         [str(powershell), "-NoProfile", "-NonInteractive", "-Command",
-         _WINDOWS_PRIVATE_ACL_SCRIPT],
+         script],
         capture_output=True, text=True, check=False, shell=False, timeout=30,
         env=environment,
     )
     if completed.returncode != 0:
         raise ContractError("could not establish a restrictive private-output DACL")
+
+
+def _restrict_windows_private_acl(path: Path) -> None:
+    """Apply and verify a current-user-only inheritable DACL, or fail closed."""
+    _run_system_acl_script(path, _WINDOWS_PRIVATE_ACL_SCRIPT)
+
+
+def _verify_windows_private_acl(path: Path) -> None:
+    """Read back the existing private DACL without changing it."""
+    _run_system_acl_script(path, _WINDOWS_VERIFY_PRIVATE_ACL_SCRIPT)
+
+
+def _validate_existing_private_output(path: Path, profiles: Iterable[str],
+                                      config: dict[str, Any]) -> Path:
+    _validate_output_boundary(path, config)
+    output = _existing_directory(str(path), "private output directory")
+    if os.name == "nt":
+        _verify_windows_private_acl(output)
+    elif stat.S_IMODE(output.stat().st_mode) & 0o077:
+        raise ContractError("private output directory permissions are too broad")
+    for profile in profiles:
+        profile_root = _existing_directory(
+            str(output / f"{profile}p"), f"{profile}p private output")
+        roots = (profile_root, *(
+            _existing_directory(str(profile_root / engine),
+                                f"{profile}p {engine} private output")
+            for engine in ("h3cspeed", "comfyui")))
+        if os.name != "nt" and any(
+                stat.S_IMODE(root.stat().st_mode) & 0o077 for root in roots):
+            raise ContractError(f"{profile}p private output permissions are too broad")
+    return output
 
 
 def _run_child(argv: list[str], stream: Any, timeout_seconds: float) -> int:
@@ -680,6 +739,20 @@ def create_dry_plan(config_path: Path, output_directory: Path,
     return destination, hashlib.sha256(payload).hexdigest()
 
 
+def load_existing_plan(path: Path) -> tuple[dict[str, Any], bytes]:
+    source = _regular_file(str(path), "existing resolution-matrix plan")
+    if source.stat().st_size > 4 * 1024 * 1024:
+        raise ContractError("existing resolution-matrix plan exceeds the 4 MiB limit")
+    payload = source.read_bytes()
+    try:
+        value = json.loads(payload, object_pairs_hook=_reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ContractError("existing resolution-matrix plan is not valid UTF-8 JSON") from error
+    if not isinstance(value, dict) or payload != canonical_bytes(value):
+        raise ContractError("existing resolution-matrix plan must be canonical JSON")
+    return value, payload
+
+
 def execute_plan(plan: dict[str, Any], output_root: Path, config: dict[str, Any],
                  config_digest: str) -> None:
     """Execute only after an explicit CLI opt-in; never claim media acceptance."""
@@ -737,19 +810,35 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        plan_path, digest = create_dry_plan(args.config, args.output_dir, args.profiles)
-        if args.execute:
-            plan = json.loads(plan_path.read_text(encoding="utf-8"))
-            # Re-read every bound path and rebuild the canonical plan before
-            # launching children.  This closes the dry-plan -> execute TOCTOU
-            # window for replaced files, links, or edited private config.
+        output = Path(os.path.abspath(args.output_dir))
+        plan_path = output / "resolution-matrix-plan.json"
+        if args.execute and output.exists():
+            # A prior dry-run owns an existing output root.  Never recreate it
+            # (or overwrite its plan); re-read and re-bind the existing plan.
+            if not plan_path.is_file():
+                raise ContractError(
+                    "--execute requires an existing dry-run resolution-matrix-plan.json")
+            plan, plan_payload = load_existing_plan(plan_path)
+            digest = hashlib.sha256(plan_payload).hexdigest()
             config, current_digest = load_config(args.config)
-            fresh = build_plan(config, current_digest,
-                                Path(os.path.abspath(args.output_dir)), args.profiles)
-            if canonical_bytes(fresh) != canonical_bytes(plan):
-                raise ContractError("resolution-matrix dry plan changed before execution")
-            execute_plan(fresh, Path(os.path.abspath(args.output_dir)),
-                         config, current_digest)
+            _validate_existing_private_output(output, args.profiles, config)
+            fresh = build_plan(config, current_digest, output, args.profiles)
+            if plan_payload != canonical_bytes(fresh):
+                raise ContractError(
+                    "existing resolution-matrix plan does not match the current config")
+            execute_plan(fresh, output, config, current_digest)
+        else:
+            plan_path, digest = create_dry_plan(args.config, output, args.profiles)
+            if args.execute:
+                # Fresh one-shot execution remains supported for callers that
+                # explicitly opt in without a preceding dry-run command.
+                config, current_digest = load_config(args.config)
+                _validate_existing_private_output(output, args.profiles, config)
+                plan, plan_payload = load_existing_plan(plan_path)
+                fresh = build_plan(config, current_digest, output, args.profiles)
+                if plan_payload != canonical_bytes(fresh):
+                    raise ContractError("resolution-matrix dry plan changed before execution")
+                execute_plan(fresh, output, config, current_digest)
     except (ContractError, OSError) as error:
         print(f"resolution-matrix dry plan failed: {error}", file=sys.stderr)
         return 2

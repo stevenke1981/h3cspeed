@@ -395,6 +395,43 @@ class ResolutionMatrixTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertEqual(launched.call_count, 2)
 
+    def test_cli_dry_then_execute_reuses_existing_plan_without_overwrite(self) -> None:
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path, _ = fixture_config(root)
+            output = root / "two-step-output"
+            dry_result = runner.main([
+                "--config", str(config_path), "--output-dir", str(output),
+                "--profiles", "240",
+            ])
+            self.assertEqual(dry_result, 0)
+            plan_path = output / "resolution-matrix-plan.json"
+            original_plan = plan_path.read_bytes()
+            with mock.patch.object(runner, "_run_child", return_value=0) as launched:
+                execute_result = runner.main([
+                    "--config", str(config_path), "--output-dir", str(output),
+                    "--profiles", "240", "--execute",
+                ])
+            self.assertEqual(execute_result, 0)
+            self.assertEqual(launched.call_count, 2)
+            self.assertEqual(plan_path.read_bytes(), original_plan)
+
+    def test_cli_execute_existing_directory_without_plan_fails_closed(self) -> None:
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path, _ = fixture_config(root)
+            output = root / "missing-plan-output"
+            output.mkdir()
+            with mock.patch.object(runner, "_run_child") as launched:
+                result = runner.main([
+                    "--config", str(config_path), "--output-dir", str(output),
+                    "--profiles", "240", "--execute",
+                ])
+            self.assertEqual(result, 2)
+            launched.assert_not_called()
+
     @unittest.skipUnless(os.name == "nt", "Windows DACL contract")
     def test_windows_private_output_has_restrictive_inheritable_dacl(self) -> None:
         runner = load_runner()

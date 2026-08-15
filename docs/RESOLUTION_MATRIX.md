@@ -63,6 +63,14 @@ python scripts/run_resolution_matrix.py `
   --execute
 ```
 
+This second command may point at the output directory created by the preceding
+dry run. The runner reads the existing `resolution-matrix-plan.json`, re-loads
+all bound inputs, rebuilds the expected canonical plan, and requires an exact
+byte match before execution. It never recreates or overwrites an existing plan.
+An existing output directory without that plan, or with a stale/non-canonical
+plan, fails closed. A fresh one-command `--execute` remains supported and first
+publishes the same immutable dry plan.
+
 `--execute` only proves that the child processes completed and wrote their
 private outputs. It does not mark media, scheduler, audio, visual quality, or
 H3-vs-Comfy parity as passed. Those require ffprobe, full ffmpeg decode,
@@ -102,3 +110,32 @@ the ComfyUI `SaveVideo(codec=auto)` path preserves its own stream defaults.
 Both files are 448x256, 22 frames, H.264/AAC, 24 fps, and approximately
 0.917--0.925 seconds long. 480p and 720p real runs remain `NOT_RUN` until
 their independent resource/timeouts are exercised.
+
+## Formal 240p-class five-second run
+
+On the same bound host, a separate 124-frame run reused the already validated
+sidecar and wrote to a fresh private output tree. Both children produced
+448x256, 124-frame, 24-fps H.264/AAC media; full `ffmpeg -xerror` video/audio
+decode, non-silent audio, Sage selection, zero attention fallback, and a manual
+frame-62 check passed. This was a sequential pair, not a counterbalanced
+cold-cache A/B: the clocks have different scopes and the Windows filesystem
+cache was not flushed.
+
+| Engine | Engine/prompt wall | MP4 SHA-256 | Size |
+| --- | ---: | --- | ---: |
+| h3cspeed | 664.741099 s | `1a36e98a9d1a5f2974777b319343b3c4c18e8bb06544c47586620774873ba452` | 254,998 B |
+| ComfyUI | 345.26 s prompt execution | `8de2d04454bf08ef9627ea1ec5419854a096df836053aa333fb2f706fc85ec4f` | 150,654 B |
+
+The observed H3 engine clock is about 1.93x the ComfyUI prompt clock for this
+non-counterbalanced pair; it is not a formal speed-alignment result. H3's
+profile identifies DiT offload churn as the dominant cost (496.836 s DiT,
+359.261 s eviction, 124.051 s file reads, 1,160 evictions and 40.26 GiB of
+uploads). A fresh cache-tuning candidate at 1,962 MiB changed the DiT profile
+to 497.997 s (359.869 s eviction, 123.235 s file reads, 1,146 evictions) and
+the total engine wall to 664.960 s, so the larger cache did not materially
+improve this shape. No cache default was changed on the strength of that one
+run; the next optimization should target eviction/file-read overlap and be
+validated with a matched pair.
+
+The formal 240p media artifacts are kept outside the repository under the
+private benchmark directory. The 480p and 720p profiles remain `NOT_RUN`.

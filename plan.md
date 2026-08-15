@@ -611,4 +611,18 @@ generation) and 447.9 s for ComfyUI; this is an observation, not a matched
 cold-cache speed claim. H3's engine-reported work was 248.93 s and ComfyUI's
 prompt execution was 345.38 s, but those clocks have different scope. The H3
 MP4 was larger because its encoder uses CRF18/AAC192k while ComfyUI preserves
-its own SaveVideo defaults. The 480p and 720p real profiles remain `NOT_RUN`.
+its own SaveVideo defaults.
+
+A formal 240p-class five-second run then reused the validated sidecar in a
+fresh private output tree. Both engines produced valid 448x256/124-frame/
+24-fps H.264/AAC media with full decode, non-silent audio, Sage/no-fallback,
+and manual frame-62 visual checks passing. The H3 engine reported 664.741099 s
+and the ComfyUI prompt reported 345.26 s; this sequential, non-counterbalanced
+pair is an observed ~1.93x H3 slowdown, not the fixed cold-cache A/B gate.
+The H3 profile shows the cause: 496.836 s DiT, 359.261 s eviction, 124.051 s
+file reads, 1,160 evictions, and 40.26 GiB uploaded. A fresh 1,962 MiB
+weight-cache candidate was effectively unchanged (664.960 s total; 497.997 s
+DiT, 359.869 s eviction, 123.235 s file reads, 1,146 evictions), so the
+default cache was not changed based on one run. The next optimization is to
+reduce eviction/file-read serialization and prove it with a counterbalanced
+same-binary pair. The 480p and 720p real profiles remain `NOT_RUN`.
