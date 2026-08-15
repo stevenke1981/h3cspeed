@@ -345,6 +345,13 @@ int main(void) {
         CHECK(gpu->offload_evictions >= 1);
         CHECK(gpu->offload_uploads >= 6);
         CHECK(gpu->file_fallback_reads >= 6);
+        CHECK(gpu->weight_reuse_stores >= 1);
+        CHECK(gpu->weight_reuse_hits >= 1);
+        CHECK(gpu->weight_reuse_pool_count <=
+              H3CSPEED_WEIGHT_REUSE_POOL_CAPACITY);
+        CHECK(gpu->weight_reuse_pool_bytes <=
+              gpu->offload.weight_cache_bytes / 3u);
+        CHECK(gpu->device_live_bytes <= gpu->offload.vram_budget_bytes);
         uint64_t fixture_size_after = 0, fixture_hash_after = 0;
         CHECK(file_fnv1a(fixture, &fixture_size_after, &fixture_hash_after));
         CHECK(fixture_size_after == fixture_size_before);

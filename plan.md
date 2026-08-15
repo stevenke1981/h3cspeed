@@ -595,6 +595,33 @@ run a matched 576x320 source-optimized pair first, then revisit exact-native
 864x480. Do not infer native H3/ComfyUI quality parity from the low-resolution
 candidate.
 
+The first DiT offload-churn slice is now implemented in the CUDA allocator.
+After both upload-ready and last-use fences complete, an evicted offload
+weight may enter a bounded same-size allocation reuse pool (eight entries, at
+most one third of the configured weight cache, and no more than 512 MiB).
+Pooled bytes stay inside the shared device-live budget; logical LRU eviction
+and weight-upload counters are unchanged, so this targets cudaFree/cudaMalloc
+churn rather than hiding reload traffic.
+
+A final short sequential probe on the RTX 3070 Ti (driver 596.36, CUDA 13.2,
+sm86) used the 448x256/22-frame/24-fps/2-step/50-layer/seed42 matrix contract,
+ram+file offload, 5.75 GiB VRAM budget, 1.5 GiB weight cache, async refill,
+one-ahead ConvRot prefetch8, layer-major VAE, Sage, and TF32 off. The final
+binary SHA-256 was DFBBDA51F7F0FD65277B8176DDDDE0C0AE75B1AD6FDB788E9CA3414ED7E9BA7B;
+the FL2VA pack manifest SHA-256 was 724650671BAB418E77C994AB2D6BE3BDA4189B760C9FA44B9B9631917FECE6FE;
+the exact 240p reference, prompt, and sidecar SHA-256 values were
+B12993DF2EB7B153A0BA9498D6E26A797D9EC5722CB1C187273691FC18AB86DF,
+75E7B21F4D7B7EDC602C29F1B03C5C5E633DB3BD8A95E4D176BE54B794EB0AA4, and
+794D0EDB4E928A86A06CE0F98A9C61A80A283204F774C1226912084B2747D7BA.
+Compared with the pre-pool binary on the same short contract, DiT eviction
+time fell from 36.440367 s to 3.236380 s and allocation time from 0.109522 s
+to 0.076803 s; uploads stayed 1,235 / 37.41 GiB and logical evictions stayed
+1,160. The final run reported reuse 290/1,337 with a 257.41 MiB pool.
+End-to-end wall time was 253.881752 s versus 250.256931 s, so this is a
+measured churn/capacity improvement, not a formal speedup claim; fixed
+cold-cache counterbalanced A/B, 480p/720p, and 124-frame gates remain
+NOT_RUN.
+
 ## 13. Native resolution matrix (240p/480p/720p)
 
 The resolution matrix is a separate 2-step throughput track. It uses native

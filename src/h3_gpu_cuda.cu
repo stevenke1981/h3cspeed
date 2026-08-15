@@ -423,6 +423,105 @@ static void track_device_release(h3_gpu *gpu, size_t bytes) {
     pthread_mutex_unlock(&gpu->lock);
 }
 
+static size_t weight_reuse_pool_limit_locked(const h3_gpu *gpu) {
+    if (!gpu || !gpu->offload.enabled || !gpu->offload.weight_cache_bytes)
+        return 0;
+    const size_t hard_limit = 512u * 1024u * 1024u;
+    const size_t policy_limit =
+        (size_t)gpu->offload.weight_cache_bytes / 3u;
+    return std::min(policy_limit, hard_limit);
+}
+
+static int weight_reuse_discard_locked(h3_gpu *gpu, size_t index) {
+    if (!gpu || index >= gpu->weight_reuse_pool_count) return 0;
+    h3cspeed_weight_reuse_entry entry = gpu->weight_reuse_pool[index];
+    if (!h3cspeed_cuda_ok(gpu, cudaFree(entry.pointer),
+                          "cudaFree weight reuse pool")) return 0;
+    track_device_release(gpu, entry.bytes);
+    for (size_t next = index + 1;
+         next < gpu->weight_reuse_pool_count; next++) {
+        gpu->weight_reuse_pool[next - 1] = gpu->weight_reuse_pool[next];
+    }
+    gpu->weight_reuse_pool_count--;
+    gpu->weight_reuse_pool_bytes =
+        gpu->weight_reuse_pool_bytes >= entry.bytes ?
+        gpu->weight_reuse_pool_bytes - entry.bytes : 0;
+    return 1;
+}
+
+static int weight_reuse_make_room_locked(h3_gpu *gpu, size_t bytes) {
+    if (!gpu) return 0;
+    const size_t limit = weight_reuse_pool_limit_locked(gpu);
+    if (!limit || bytes > limit) return 0;
+    while (gpu->weight_reuse_pool_count >=
+               H3CSPEED_WEIGHT_REUSE_POOL_CAPACITY ||
+           gpu->weight_reuse_pool_bytes > limit - bytes) {
+        if (!gpu->weight_reuse_pool_count ||
+            !weight_reuse_discard_locked(gpu, 0)) return 0;
+    }
+    return 1;
+}
+
+static int weight_reuse_store_locked(h3_gpu *gpu, void *pointer,
+                                     size_t bytes) {
+    if (!gpu || !pointer || !bytes ||
+        !weight_reuse_make_room_locked(gpu, bytes)) return 0;
+    h3cspeed_weight_reuse_entry *entry =
+        &gpu->weight_reuse_pool[gpu->weight_reuse_pool_count++];
+    entry->pointer = pointer;
+    entry->bytes = bytes;
+    gpu->weight_reuse_pool_bytes += bytes;
+    gpu->weight_reuse_stores++;
+    return 1;
+}
+
+static size_t weight_reuse_find_locked(const h3_gpu *gpu, size_t bytes) {
+    if (!gpu || !bytes) return SIZE_MAX;
+    size_t best = SIZE_MAX;
+    size_t best_bytes = SIZE_MAX;
+    for (size_t index = 0; index < gpu->weight_reuse_pool_count; index++) {
+        const size_t candidate_bytes = gpu->weight_reuse_pool[index].bytes;
+        /* Keep the accounting exact: a pooled allocation has no separate
+         * capacity field on h3_gpu_tensor, so only same-sized weights may
+         * consume it.  ConvRot reloads hit this path without risking a
+         * larger allocation being returned as a smaller tensor. */
+        if (candidate_bytes == bytes && candidate_bytes < best_bytes) {
+            best = index;
+            best_bytes = candidate_bytes;
+        }
+    }
+    return best;
+}
+
+static void *weight_reuse_take_locked(h3_gpu *gpu, size_t index,
+                                      size_t *bytes) {
+    if (!gpu || index >= gpu->weight_reuse_pool_count) return nullptr;
+    h3cspeed_weight_reuse_entry entry = gpu->weight_reuse_pool[index];
+    for (size_t next = index + 1;
+         next < gpu->weight_reuse_pool_count; next++) {
+        gpu->weight_reuse_pool[next - 1] = gpu->weight_reuse_pool[next];
+    }
+    gpu->weight_reuse_pool_count--;
+    gpu->weight_reuse_pool_bytes =
+        gpu->weight_reuse_pool_bytes >= entry.bytes ?
+        gpu->weight_reuse_pool_bytes - entry.bytes : 0;
+    if (bytes) *bytes = entry.bytes;
+    return entry.pointer;
+}
+
+static void weight_reuse_destroy_locked(h3_gpu *gpu) {
+    if (!gpu) return;
+    while (gpu->weight_reuse_pool_count) {
+        if (!weight_reuse_discard_locked(gpu, 0)) {
+            /* There is no safe owner left to retain a failed cleanup entry;
+             * do not retry indefinitely during process teardown. */
+            gpu->weight_reuse_pool_count = 0;
+            gpu->weight_reuse_pool_bytes = 0;
+            break;
+        }
+    }
+}
+
 static int release_tensor_device_locked(h3_gpu *gpu, h3_gpu_tensor *tensor,
                                         int wait_for_use,
                                         int legacy_count_eviction,
@@ -437,11 +536,13 @@ static int release_tensor_device_locked(h3_gpu *gpu, h3_gpu_tensor *tensor,
             return 0;
     }
     void *pointer = tensor->data;
-    /* Do not mutate the residency/LRU bookkeeping until cudaFree succeeds.
-     * Keeping the pointer reachable is safer than silently losing it if the
-     * CUDA runtime reports an asynchronous failure at this synchronization
-     * boundary. */
-    if (!h3cspeed_cuda_ok(gpu, cudaFree(pointer), "cudaFree tensor")) return 0;
+    /* The ready/last-use fences above make this allocation safe to recycle.
+     * Keep a bounded offload-weight pool when possible; otherwise preserve the
+     * original cudaFree path and its fail-closed bookkeeping. */
+    int reused_by_pool = tensor->offloadable && wait_for_use &&
+                         weight_reuse_store_locked(gpu, pointer, tensor->bytes);
+    if (!reused_by_pool &&
+        !h3cspeed_cuda_ok(gpu, cudaFree(pointer), "cudaFree tensor")) return 0;
     tensor->data = nullptr;
     tensor->prefetch_reserved = 0;
     pthread_mutex_lock(&tensor->lock);
@@ -457,7 +558,7 @@ static int release_tensor_device_locked(h3_gpu *gpu, h3_gpu_tensor *tensor,
             gpu->offload_evicted_bytes += tensor->bytes;
         }
     }
-    track_device_release(gpu, tensor->bytes);
+    if (!reused_by_pool) track_device_release(gpu, tensor->bytes);
     if (gpu->profile_enabled) {
         pthread_mutex_lock(&gpu->lock);
         (void)h3cspeed_profile_record_eviction(
@@ -481,37 +582,47 @@ static h3_gpu_tensor *eviction_candidate_locked(h3_gpu *gpu,
     return nullptr;
 }
 
-static int allocation_fits_locked(h3_gpu *gpu, size_t bytes,
-                                  int weight_allocation) {
+static int allocation_fits_locked(h3_gpu *gpu, size_t device_bytes,
+                                  size_t weight_bytes) {
     if (!gpu->offload.enabled) return 1;
-    if ((uint64_t)bytes > gpu->offload.vram_budget_bytes) return 0;
-    if ((uint64_t)gpu->device_live_bytes + bytes >
+    if ((uint64_t)device_bytes > gpu->offload.vram_budget_bytes) return 0;
+    if ((uint64_t)gpu->device_live_bytes + device_bytes >
         gpu->offload.vram_budget_bytes) return 0;
-    if (weight_allocation &&
-        (uint64_t)gpu->resident_weight_bytes + bytes >
+    if (weight_bytes &&
+        (uint64_t)gpu->resident_weight_bytes + weight_bytes >
         gpu->offload.weight_cache_bytes) return 0;
+    if (!device_bytes) return 1;
     size_t free_bytes = 0, total_bytes = 0;
     if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
         const size_t runtime_headroom = 64u * 1024u * 1024u;
-        if (free_bytes < bytes || free_bytes - bytes < runtime_headroom) return 0;
+        if (free_bytes < device_bytes ||
+            free_bytes - device_bytes < runtime_headroom) return 0;
     } else {
         (void)cudaGetLastError();
     }
     return 1;
 }
 
-static int evict_until_fit_locked(h3_gpu *gpu, size_t bytes,
-                                  int weight_allocation,
+static int evict_until_fit_locked(h3_gpu *gpu, size_t device_bytes,
+                                  size_t weight_bytes,
                                   h3_gpu_tensor *protected_tensor) {
-    while (!allocation_fits_locked(gpu, bytes, weight_allocation)) {
+    while (!allocation_fits_locked(gpu, device_bytes, weight_bytes)) {
+        /* Pool entries are already fenced and cheaper to release than a live
+         * tensor.  Drop them first when an actual new device allocation needs
+         * room; a reusable entry takes the zero-added-device path below. */
+        if (gpu->weight_reuse_pool_count) {
+            if (!weight_reuse_discard_locked(gpu, 0)) return 0;
+            continue;
+        }
         h3_gpu_tensor *candidate = eviction_candidate_locked(gpu, protected_tensor);
         if (!candidate) {
             char detail[320];
+            const size_t requested_bytes = weight_bytes ? weight_bytes : device_bytes;
             snprintf(detail, sizeof(detail),
                      "request %.2f MiB exceeds the active %.2f MiB VRAM budget "
                      "or %.2f MiB weight cache; lower resolution/frames or "
                      "increase H3_CUDA_VRAM_BUDGET_MIB/H3_CUDA_WEIGHT_CACHE_MIB",
-                     (double)bytes / (1024.0 * 1024.0),
+                     (double)requested_bytes / (1024.0 * 1024.0),
                      (double)gpu->offload.vram_budget_bytes / (1024.0 * 1024.0),
                      (double)gpu->offload.weight_cache_bytes / (1024.0 * 1024.0));
             h3cspeed_set_error(gpu, "CUDA offload allocation", detail);
@@ -529,6 +640,12 @@ static int trim_offload_cache_locked(h3_gpu *gpu) {
     while ((uint64_t)gpu->device_live_bytes > gpu->offload.vram_budget_bytes ||
            (uint64_t)gpu->resident_weight_bytes >
                gpu->offload.weight_cache_bytes) {
+        if ((uint64_t)gpu->device_live_bytes >
+                gpu->offload.vram_budget_bytes &&
+            gpu->weight_reuse_pool_count) {
+            if (!weight_reuse_discard_locked(gpu, 0)) return 0;
+            continue;
+        }
         h3_gpu_tensor *candidate = eviction_candidate_locked(gpu, nullptr);
         if (!candidate) {
             h3cspeed_set_error(
@@ -550,8 +667,34 @@ static int device_allocate_locked(h3_gpu *gpu, void **pointer, size_t bytes,
     if (!gpu || !pointer) return 0;
     *pointer = nullptr;
     if (!bytes) return 1;
-    if (!evict_until_fit_locked(gpu, bytes, weight_allocation,
+    const size_t weight_bytes = weight_allocation ? bytes : 0;
+    size_t reuse_index = weight_allocation ?
+        weight_reuse_find_locked(gpu, bytes) : SIZE_MAX;
+    const size_t added_device_bytes = reuse_index == SIZE_MAX ? bytes : 0;
+    if (!evict_until_fit_locked(gpu, added_device_bytes, weight_bytes,
                                 protected_tensor)) return 0;
+    /* Eviction can add a newly reusable entry, so search again after the
+     * budget loop rather than retaining an invalid pool index. */
+    reuse_index = weight_allocation ?
+        weight_reuse_find_locked(gpu, bytes) : SIZE_MAX;
+    if (reuse_index != SIZE_MAX) {
+        size_t reused_bytes = 0;
+        *pointer = weight_reuse_take_locked(gpu, reuse_index, &reused_bytes);
+        if (!*pointer || reused_bytes != bytes) {
+            if (*pointer) {
+                (void)cudaFree(*pointer);
+                track_device_release(gpu, reused_bytes);
+            }
+            h3cspeed_set_error(gpu, "weight reuse allocation",
+                               "invalid pooled device allocation");
+            return 0;
+        }
+        gpu->weight_reuse_hits++;
+        gpu->resident_weight_bytes += bytes;
+        gpu->peak_resident_weight_bytes = std::max(
+            gpu->peak_resident_weight_bytes, gpu->resident_weight_bytes);
+        return 1;
+    }
     double allocation_started = gpu->profile_enabled ?
         h3cspeed_profile_now_seconds() : 0.0;
     cudaError_t status = cudaMalloc(pointer, bytes);
@@ -560,6 +703,9 @@ static int device_allocate_locked(h3_gpu *gpu, void **pointer, size_t bytes,
                        h3cspeed_profile_now_seconds() - allocation_started);
     if (status != cudaSuccess && gpu->offload.enabled) {
         (void)cudaGetLastError();
+        while (gpu->weight_reuse_pool_count) {
+            if (!weight_reuse_discard_locked(gpu, 0)) return 0;
+        }
         h3_gpu_tensor *candidate = nullptr;
         while ((candidate = eviction_candidate_locked(gpu, protected_tensor))) {
             if (!release_tensor_device_locked(
@@ -1535,6 +1681,7 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
             "host-cache=%.2f MiB peak-host=%.2f MiB "
             "uploads=%" PRIu64 "/%.2f GiB evictions=%" PRIu64
             "/%.2f GiB host-evictions=%" PRIu64 "/%.2f GiB "
+            "weight-reuse=%" PRIu64 "/%" PRIu64 " pool=%.2f MiB "
             "file-fallback=%" PRIu64 "/%.2f GiB linear=%" PRIu64
             " conv=%" PRIu64 " sdpa=%" PRIu64 "\n",
             has_safe_label ? " [" : "",
@@ -1553,6 +1700,9 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
             gpu->host_cache_evictions,
             (double)gpu->host_cache_evicted_bytes /
                 (1024.0 * 1024.0 * 1024.0),
+            gpu->weight_reuse_hits,
+            gpu->weight_reuse_stores,
+            (double)gpu->weight_reuse_pool_bytes / (1024.0 * 1024.0),
             gpu->file_fallback_reads,
             (double)gpu->file_fallback_bytes / (1024.0 * 1024.0 * 1024.0),
             gpu->stats.mps_linear_dispatches,
@@ -1564,6 +1714,9 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
      * timing events that may still be referenced by the upload stream. */
     refill_trace_destroy(gpu);
     upload_wait_trace_destroy(gpu);
+    /* Evicted weight allocations are retained only until the context is
+     * quiescent. Drain the bounded reuse pool before destroying CUDA objects. */
+    weight_reuse_destroy_locked(gpu);
     if (gpu->scratch) cudaFree(gpu->scratch);
     if (gpu->staging_done[0]) cudaEventDestroy(gpu->staging_done[0]);
     if (gpu->staging_done[1]) cudaEventDestroy(gpu->staging_done[1]);
@@ -1725,7 +1878,7 @@ static int tensor_synchronize_before_host_overwrite_locked(
         !tensor_event_synchronize(gpu, tensor, 1,
                                   "wait for tensor use before refill")) return 0;
     if (tensor->data && !release_tensor_device_locked(
-            gpu, tensor, 0, 1,
+            gpu, tensor, 1, 1,
             H3CSPEED_PROFILE_EVICTION_PHASE_RETIRE)) return 0;
     return 1;
 }

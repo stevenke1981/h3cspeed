@@ -606,3 +606,37 @@ calling this an architecture-wide production release.
   288x160 with the previously recorded facial deformation and seam defects,
   so 576x320/native visual parity and the exact-native timeout are still
   `NOT_RUN`.
+
+## DiT offload allocation reuse churn slice (2026-08-15)
+
+- The CUDA allocator now keeps a bounded same-size reuse pool for evicted
+  offload weight allocations, but only after upload-ready and last-use fences
+  complete. The pool has eight entries, is limited to one third of the weight
+  cache and 512 MiB, and remains included in device-live VRAM accounting.
+  Logical LRU evictions, reloads and uploaded bytes are intentionally still
+  counted.
+- Final source validation used the RTX 3070 Ti (driver 596.36, CUDA 13.2,
+  sm86), the FL2VA pack manifest SHA-256
+  `724650671BAB418E77C994AB2D6BE3BDA4189B760C9FA44B9B9631917FECE6FE`, and
+  binary SHA-256
+  `DFBBDA51F7F0FD65277B8176DDDDE0C0AE75B1AD6FDB788E9CA3414ED7E9BA7B`.
+  The private 448x256 reference, prompt and 240p sidecar hashes were
+  `B12993DF2EB7B153A0BA9498D6E26A797D9EC5722CB1C187273691FC18AB86DF`,
+  `75E7B21F4D7B7EDC602C29F1B03C5C5E633DB3BD8A95E4D176BE54B794EB0AA4`,
+  and
+  `794D0EDB4E928A86A06CE0F98A9C61A80A283204F774C1226912084B2747D7BA`.
+  The command used 22 frames, 24 fps, 2 steps, 50 layers, seed 42,
+  ram+file offload, 5888 MiB VRAM budget, 1536 MiB weight cache, async refill,
+  one-ahead ConvRot prefetch8, layer-major VAE, Sage and TF32 off.
+- Against the pre-pool build-perf008 binary on the same short contract, DiT
+  eviction time fell from 36.440367 s to 3.236380 s and allocation time from
+  0.109522 s to 0.076803 s. Uploads remained 1,235 / 37.41 GiB and logical
+  evictions remained 1,160; stderr reported 290 reuse hits, 1,337 stores and
+  a 257.41 MiB pool. Final MP4 SHA-256
+  `798EAFEF7E692BC1DF81B214F3BD7F886DE86682DFF63FC5BB26299A545799F8`
+  passed H.264/AAC 448x256/22-frame/24-fps ffprobe and full video/audio
+  decode.
+- Wall time was 253.881752 s versus 250.256931 s for the pre-pool binary.
+  Therefore this is a measured allocator-churn/capacity improvement, not a
+  formal end-to-end speedup result. Counterbalanced cold-cache A/B,
+  480p/720p, generated-INT8 cycling, and 124-frame gates remain NOT_RUN.

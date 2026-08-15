@@ -34,6 +34,18 @@ struct h3_gpu;
  * the VAE contexts. */
 #define H3CSPEED_UPLOAD_WAIT_TRACE_CAPACITY 4096
 
+/* Evicted offload weights have already waited for both their upload-ready and
+ * last-use events.  Keeping a small bounded set of those device allocations
+ * lets the next weight of the same size reuse the allocation without a
+ * cudaFree/cudaMalloc pair.  The pool is private and its bytes still count
+ * toward device_live_bytes, so it cannot bypass the shared VRAM budget. */
+#define H3CSPEED_WEIGHT_REUSE_POOL_CAPACITY 8
+
+struct h3cspeed_weight_reuse_entry {
+    void *pointer;
+    size_t bytes;
+};
+
 struct h3cspeed_refill_trace_entry {
     uint64_t sequence;
     uint64_t refill_id;
@@ -136,6 +148,12 @@ struct h3_gpu {
     size_t pinned_host_live_bytes;
     size_t peak_resident_weight_bytes;
     size_t peak_host_cache_bytes;
+    h3cspeed_weight_reuse_entry weight_reuse_pool[
+        H3CSPEED_WEIGHT_REUSE_POOL_CAPACITY];
+    size_t weight_reuse_pool_count;
+    size_t weight_reuse_pool_bytes;
+    uint64_t weight_reuse_hits;
+    uint64_t weight_reuse_stores;
     uint64_t operation_epoch;
     uint64_t offload_uploads;
     uint64_t offload_upload_bytes;

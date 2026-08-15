@@ -60,6 +60,10 @@ Acceptance:
 - RAM pressure drops only file-reconstructible host copies;
 - scratch growth and submit-time release update tracked live bytes correctly;
 - shutdown leaves zero tracked device and host-cache bytes.
+- fenced evictions may reuse only exact-size weight allocations; reuse-pool
+  bytes remain inside device-live VRAM accounting and are drained at teardown;
+- the focused run reports nonzero reuse hits/stores without changing logical
+  upload, reload, or eviction counters.
 
 Run:
 

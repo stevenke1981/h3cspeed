@@ -79,6 +79,16 @@ unavailable, the runtime keeps the original single-buffer synchronous path.
 This switch does not increase the configured staging allocation and does not by
 itself prove end-to-end DiT overlap or a video wall-time improvement.
 
+When RAM/file offload is active, an evicted weight allocation enters a bounded
+same-size device-allocation reuse pool only after its upload-ready and last-use
+events have completed. The pool is capped at eight entries and at one third of
+the configured weight cache, with a 512 MiB hard ceiling; pooled bytes remain
+in device_live_bytes and are released before context teardown, so the shared
+VRAM budget remains authoritative. A reuse hit avoids the driver cudaFree and
+cudaMalloc pair but does not remove logical LRU eviction or weight upload.
+The stderr memory summary reports weight-reuse hits/stores as a churn
+diagnostic; it is not an end-to-end speedup claim.
+
 The PERF-006 upload-wait trace measures the device interval associated with
 the compute stream waiting for a weight's upload-ready event. It does not
 relabel compute, file-read, eviction or final-drain time as upload-ready wait.
