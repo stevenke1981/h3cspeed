@@ -536,17 +536,27 @@ was possibly warm and the order was baseline then candidate. Candidate wall
 was 686.814827 s versus 678.499696 s (+1.2255%), so an end-to-end speedup is
 `NOT_MET` and the formal >=50% gate remains `NOT_RUN`.
 
-The immediate next change is a reverse-order counterbalanced pair (the
-resolution-matrix runner supports `--reverse-order` per profile) and cost
-attribution for reserve/upload, eviction, file I/O and scheduling. Keep the
-same binary, immutable manifest, async-refill route and private trace; do not
-select the better order after the fact. The reverse flag changes process order
-only and does not flush the Windows filesystem cache, so its summary remains
-`OBSERVED_ONLY` until the full cold-cache protocol is met. Generated-INT8 cycling and
-pageable-allocation failure injection remain focused test debt. Only after the
-wall regression is explained or removed should the complete matched
-864x480/124-frame/8-step matrix run with one cold plus three warm trials per
-engine, including the 124-frame <40 GiB and PERF-001 95% gates.
+The reverse-order counterbalanced pair is now complete for the 240p-class
+profile. H3-then-ComfyUI measured 855.971099 s versus 435.675537 s, while
+ComfyUI-then-H3 measured 853.185943 s versus 452.711302 s; the means are
+854.578521 s and 444.193419 s (1.9239x). Both orders produced identical
+media and passed the same decode/audio/Sage checks, but the result remains
+`OBSERVED_ONLY`: the Windows filesystem cache was not flushed and the producer
+clocks have different scopes. The runner's `--reverse-order` changes process
+order only; it is not a formal cold-cache gate.
+
+Two H3-only follow-ups did not justify another capacity knob: a 1,962 MiB
+weight-cache probe measured 669.961096 s engine wall, 502.521261 s DiT wall,
+364.713215 s eviction time and 1,146 LRU evictions; a four-weight prefetch
+probe at the 1,536 MiB default measured 668.469394 s, 501.029463 s,
+363.038060 s and 1,160 evictions. Both retained the same media hash and
+40.1667 GB upload traffic. No default cache or prefetch policy was changed.
+The next source slice is therefore eviction/file-read serialization in the DiT
+working set, with generated-INT8 cycling and pageable-allocation failure
+injection still focused test debt. Only after the wall regression is explained
+or removed should the complete matched 864x480/124-frame/8-step matrix run
+with one cold plus three warm trials per engine, including the 124-frame
+<40 GiB and PERF-001 95% gates.
 
 The h3cspeed producer records actual serving sigma arrays and `dit_bf16` Sage
 hit/expected-native/unexpected-fallback counters through opt-in, no-clobber
@@ -658,6 +668,16 @@ The H3 profile shows the cause: 496.836 s DiT, 359.261 s eviction, 124.051 s
 file reads, 1,160 evictions, and 40.26 GiB uploaded. A fresh 1,962 MiB
 weight-cache candidate was effectively unchanged (664.960 s total; 497.997 s
 DiT, 359.869 s eviction, 123.235 s file reads, 1,146 evictions), so the
-default cache was not changed based on one run. The next optimization is to
-reduce eviction/file-read serialization and prove it with a counterbalanced
-same-binary pair. The 480p and 720p real profiles remain `NOT_RUN`.
+default cache was not changed based on one run.
+
+The cached-sidecar profile was then repeated in both process orders on
+2026-08-16. H3-then-ComfyUI measured 855.971099 s versus 435.675537 s;
+ComfyUI-then-H3 measured 853.185943 s versus 452.711302 s. The means were
+854.578521 s and 444.193419 s (1.9239x). Both orders produced identical
+H3/ComfyUI media hashes and passed full media/audio/Sage checks, but this is
+`OBSERVED_ONLY`: Windows filesystem cache state was not flushed and the
+producer clocks have different scope. A four-weight prefetch probe also
+preserved 40.1667 GiB upload traffic and did not materially reduce DiT
+eviction time. The next source change must target eviction/file-read
+serialization rather than another unvalidated cache-size knob. The 480p and
+720p real profiles remain `NOT_RUN`.

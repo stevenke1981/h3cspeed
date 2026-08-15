@@ -149,5 +149,40 @@ improve this shape. No cache default was changed on the strength of that one
 run; the next optimization should target eviction/file-read overlap and be
 validated with a matched pair.
 
+## Counterbalanced 240p-class pair
+
+On 2026-08-16 the cached-sidecar 240p profile was run twice with the same
+`build-perf008/h3cspeed.exe`, manifest, sidecar, prompt, reference PNG, seed,
+and native 448x256/124-frame/24-fps/2-step contract. The first run used the
+canonical H3-then-Comfy order; the second used `--reverse-order`, which runs
+ComfyUI before H3 within the profile. Both private output trees passed the
+same media checks as the formal run: H.264/AAC, 448x256, 124 frames, 24 fps,
+full video/audio `ffmpeg -xerror` decode, non-silent audio, Sage selected with
+zero attention fallbacks, and the same manually inspected speaking frame.
+
+| Order | H3 child wall | ComfyUI child wall | Whole-command ratio | H3 MP4 SHA-256 | ComfyUI MP4 SHA-256 |
+| --- | ---: | ---: | ---: | --- | --- |
+| H3 then ComfyUI | 855.971099 s | 435.675537 s | 1.9647x | `1a36e98a9d1a5f2974777b319343b3c4c18e8bb06544c47586620774873ba452` | `8de2d04454bf08ef9627ea1ec5419854a096df836053aa333fb2f706fc85ec4f` |
+| ComfyUI then H3 | 853.185943 s | 452.711302 s | 1.8846x | `1a36e98a9d1a5f2974777b319343b3c4c18e8bb06544c47586620774873ba452` | `8de2d04454bf08ef9627ea1ec5419854a096df836053aa333fb2f706fc85ec4f` |
+
+The process-wall means are 854.578521 s for H3 and 444.193419 s for ComfyUI
+(1.9239x). The H3 order spread was 2.79 s, while the ComfyUI spread was
+17.04 s; output hashes were identical across orders. This is useful
+counterbalanced evidence, but it is still `OBSERVED_ONLY`: Windows filesystem
+cache flushing was not performed, and the two child clocks include different
+producer scopes. It is not a formal cold-cache speed-alignment PASS.
+
+Two follow-up H3-only churn probes also stayed opt-in and outside the matrix
+default. Raising the weight cache from 1,536 to 1,962 MiB produced a 669.961 s
+engine result with a 502.521 s DiT profile, 364.713 s eviction time and 1,146
+logical evictions. Limiting each one-ahead batch to four weights produced a
+668.469 s engine result with a 501.029 s DiT profile, 363.038 s eviction time
+and 1,160 logical evictions. Both probes emitted the same H3 MP4 SHA as the
+baseline and passed full media/audio decode, but neither reduced the churn
+materially; no default cache or prefetch setting was changed. The next source
+slice should measure and reduce eviction/file-read serialization itself,
+rather than stacking another unvalidated capacity knob. The 480p and 720p
+profiles remain `NOT_RUN`.
+
 The formal 240p media artifacts are kept outside the repository under the
-private benchmark directory. The 480p and 720p profiles remain `NOT_RUN`.
+private benchmark directory; the 480p and 720p profiles remain `NOT_RUN`.

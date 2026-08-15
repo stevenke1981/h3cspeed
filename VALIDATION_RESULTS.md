@@ -640,3 +640,41 @@ calling this an architecture-wide production release.
   Therefore this is a measured allocator-churn/capacity improvement, not a
   formal end-to-end speedup result. Counterbalanced cold-cache A/B,
   480p/720p, generated-INT8 cycling, and 124-frame gates remain NOT_RUN.
+
+## PERF-007 counterbalanced 240p-class follow-up (2026-08-16)
+
+- The cached-sidecar 240p matrix profile was run in both process orders with
+  the same `build-perf008/h3cspeed.exe`, immutable manifest, FL2VA sidecar,
+  prompt, exact 448x256 reference PNG, seed 42, native output dimensions,
+  124 frames, 24 fps, two steps, 50 layers, layer-major VAE, async refill,
+  one-ahead ConvRot prefetch8, Sage and TF32 off. The H3 binary SHA-256 was
+  `EFEE3265476996F569F44DDD5BE47A83B58CBD2467A3CC5ED63EB73986B33FA9`; the
+  sidecar SHA-256 was
+  `794D0EDB4E928A86A06CE0F98A9C61A80A283204F774C1226912084B2747D7BA`.
+- H3-then-ComfyUI measured 855.971099 s for the H3 child and 435.675537 s
+  for the ComfyUI child (whole-command ratio 1.9647x). The reverse-order
+  run measured 853.185943 s and 452.711302 s (ratio 1.8846x). The means were
+  854.578521 s and 444.193419 s (1.9239x); H3 order spread was 2.79 s and
+  ComfyUI spread was 17.04 s.
+- Both orders produced the exact same H3 MP4 SHA-256
+  `1A36E98A9D1A5F2974777B319343B3C4C18E8BB06544C47586620774873BA452` and
+  ComfyUI MP4 SHA-256
+  `8DE2D04454BF08EF9627EA1EC5419854A096DF836053AA333FB2F706FC85EC4F`.
+  Both files passed H.264/AAC 448x256/124-frame/24-fps ffprobe, full
+  `ffmpeg -xerror` video/audio decode, non-silent audio, Sage selection and
+  zero attention fallbacks; a speaking frame was manually inspected in each
+  order. These are `OBSERVED_ONLY` media/counterbalance results, not a formal
+  fixed cold-cache speed gate because Windows filesystem cache was not flushed
+  and the producer clocks have different scopes.
+- A same-sidecar H3-only cache probe at 1,962 MiB reported 669.961096 s engine
+  wall, 502.521261 s DiT profile wall, 364.713215 s eviction time, 1,146 LRU
+  evictions and 1,235 uploads / 40.1667 GB. A four-weight one-ahead probe at
+  the 1,536 MiB default reported 668.469394 s engine wall, 501.029463 s DiT
+  profile wall, 363.038060 s eviction time, 1,160 LRU evictions and the same
+  1,235 uploads / 40.1667 GB. Both media outputs matched the H3 SHA above and
+  passed full video/audio decode. Neither setting materially reduced churn, so
+  no default cache or prefetch policy was changed.
+- The remaining source target is eviction/file-read serialization in the DiT
+  working set. The 480p and 720p native profiles, generated-INT8 cycling,
+  pageable-allocation failure injection, fixed cold-cache >=50% upload-wait
+  reduction and 124-frame/8-step gates remain `NOT_RUN`.
