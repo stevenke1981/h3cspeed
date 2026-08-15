@@ -210,10 +210,8 @@ class ResolutionMatrixTests(unittest.TestCase):
                     width_flag, height_flag = "-Width", "-Height"
                     frames_flag, steps_flag = "-Frames", "-Steps"
                     reference_flag, prompt_flag = "-FirstFrame", "-PromptFile"
-                    self.assertEqual(argv[argv.index("-RenderWidth") + 1],
-                                     str(contract["output"]["width"]))
-                    self.assertEqual(argv[argv.index("-RenderHeight") + 1],
-                                     str(contract["output"]["height"]))
+                    self.assertNotIn("-RenderWidth", argv)
+                    self.assertNotIn("-RenderHeight", argv)
                     self.assertEqual(argv[argv.index("-Layers") + 1], "50")
                     self.assertEqual(argv[argv.index("-Seed") + 1], "42")
                     for optimization in ("-LayerMajor", "-AsyncRefill", "-DitPrefetch"):
@@ -230,9 +228,28 @@ class ResolutionMatrixTests(unittest.TestCase):
                                   contract["output"]["height"]))
                 self.assertEqual(argv[argv.index(prompt_flag) + 1],
                                  config["prompt_file"])
-                self.assertFalse({"--resize", "--scale", "--stretch"} & set(argv))
+                self.assertFalse({"-RenderWidth", "-RenderHeight", "--render-width",
+                                  "--render-height", "--resize", "--scale", "--stretch"}
+                                 & set(argv))
             self.assertEqual(plan["status"], "NOT_RUN")
             self.assertEqual(plan["mode"], "dry-run")
+
+    def test_h3_render_override_is_rejected_even_when_value_matches(self) -> None:
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path, _ = fixture_config(root)
+            config, digest = runner.load_config(config_path)
+            output = root / "matrix"
+            plan = runner.build_plan(config, digest, output, ("240",))
+            command = next(item for item in plan["commands"]
+                           if item["engine"] == "h3cspeed")
+            insert_at = command["argv"].index("-Frames")
+            command["argv"][insert_at:insert_at] = [
+                "-RenderWidth", "448", "-RenderHeight", "256"
+            ]
+            with self.assertRaisesRegex(runner.ContractError, "scaling or stretching"):
+                runner.validate_plan(plan, output)
 
     def test_private_output_is_new_no_clobber_and_plan_stays_not_run(self) -> None:
         runner = load_runner()

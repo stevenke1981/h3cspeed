@@ -12,10 +12,11 @@ not change the fixed PERF-002 or PERF-007 contracts.
 The names are resolution classes, not claims that the output is the legacy
 426x240, 854x480, or 1280x720 raster. Those common rasters do not satisfy the
 H3 32-pixel geometry contract. Both engines receive the exact same per-profile
-PNG, prompt, seed, steps, frame count, and native width/height. The matrix
-rejects `render_width`/`render_height` overrides and reference images whose PNG
-IHDR does not exactly match the profile; no resize or stretch is part of the
-benchmark path.
+PNG, prompt, seed, steps, frame count, and native width/height. The H3 matrix
+argv deliberately contains no render-dimension override; the native runner's
+default is therefore `render == output`. The matrix rejects render/resize/
+stretch flags and reference images whose PNG IHDR does not exactly match the
+profile; no runtime resize or stretch is part of the benchmark path.
 
 The generated talking-presenter reference images are local benchmark inputs,
 not repository payloads. Bind them by SHA-256 in the private configuration.

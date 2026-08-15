@@ -628,7 +628,9 @@ The resolution matrix is a separate 2-step throughput track. It uses native
 H3-grid profiles 448x256, 864x480, and 1280x704, with exact per-profile PNG
 references, `render == output`, 124 frames, 24 fps, 50 layers, and seed 42.
 The paired dry-run/execute contract is implemented in
-`scripts/run_resolution_matrix.py`; it is fail-closed against resize flags,
+`scripts/run_resolution_matrix.py`; H3 commands omit render-dimension
+overrides so native execution defaults to `render == output`, and the runner
+is fail-closed against resize flags,
 protected output roots, stale plans, child-process timeout descendants, and
 unverified Windows private-output ACLs.
 

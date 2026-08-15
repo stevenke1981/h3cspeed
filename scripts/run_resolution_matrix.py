@@ -344,7 +344,6 @@ def build_h3_command(config: dict[str, Any], output_root: Path,
         "-BinaryPath", config["h3_binary"],
         "-ProfileDir", str(profile_root / "profile"),
         "-Width", width, "-Height", height,
-        "-RenderWidth", width, "-RenderHeight", height,
         "-Frames", str(FRAMES), "-Steps", str(STEPS),
         "-Layers", str(LAYERS), "-Seed", str(SEED), "-LayerMajor", "-AsyncRefill",
         "-DitPrefetch", "-ResolutionMatrix",
@@ -460,8 +459,6 @@ def validate_plan(value: Any, output_root: Path) -> dict[str, Any]:
                     argv.count("-ResolutionMatrix") != 1 or
                     _flag_value(argv, "-Width") != width or
                     _flag_value(argv, "-Height") != height or
-                    _flag_value(argv, "-RenderWidth") != width or
-                    _flag_value(argv, "-RenderHeight") != height or
                     _flag_value(argv, "-Frames") != str(FRAMES) or
                     _flag_value(argv, "-Steps") != str(STEPS) or
                     _flag_value(argv, "-Layers") != "50" or
@@ -474,8 +471,11 @@ def validate_plan(value: Any, output_root: Path) -> dict[str, Any]:
                 "-SidecarPath": profile_root / "conditioning.h3c",
                 "-ProfileDir": profile_root / "profile",
             }
-            forbidden = ("--render-width", "--render-height", "--resize", "--scale",
-                         "--stretch")
+            # The native runner defaults render dimensions to the requested
+            # output dimensions.  Keep the no-resize contract structural by
+            # omitting render overrides from the matrix command entirely.
+            forbidden = ("-RenderWidth", "-RenderHeight", "--render-width",
+                         "--render-height", "--resize", "--scale", "--stretch")
         for flag, expected in expected_outputs.items():
             if Path(_flag_value(argv, flag)) != expected:
                 raise ContractError(f"matrix command has an unsafe {flag} destination")
