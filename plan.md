@@ -536,10 +536,13 @@ was possibly warm and the order was baseline then candidate. Candidate wall
 was 686.814827 s versus 678.499696 s (+1.2255%), so an end-to-end speedup is
 `NOT_MET` and the formal >=50% gate remains `NOT_RUN`.
 
-The immediate next change is a reverse-order counterbalanced 22-frame pair and
-cost attribution for reserve/upload, eviction, file I/O and scheduling. Keep
-the same binary, immutable manifest, async-refill route and private trace; do
-not select the better order after the fact. Generated-INT8 cycling and
+The immediate next change is a reverse-order counterbalanced pair (the
+resolution-matrix runner supports `--reverse-order` per profile) and cost
+attribution for reserve/upload, eviction, file I/O and scheduling. Keep the
+same binary, immutable manifest, async-refill route and private trace; do not
+select the better order after the fact. The reverse flag changes process order
+only and does not flush the Windows filesystem cache, so its summary remains
+`OBSERVED_ONLY` until the full cold-cache protocol is met. Generated-INT8 cycling and
 pageable-allocation failure injection remain focused test debt. Only after the
 wall regression is explained or removed should the complete matched
 864x480/124-frame/8-step matrix run with one cold plus three warm trials per

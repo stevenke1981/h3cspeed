@@ -64,6 +64,13 @@ python scripts/run_resolution_matrix.py `
   --execute
 ```
 
+For a counterbalanced follow-up, add `--reverse-order`. This keeps the
+canonical plan and per-profile pairing unchanged but launches ComfyUI before
+H3cspeed within each profile, recording `execution_order` as
+`comfyui_then_h3cspeed` in the summary. The flag is rejected unless
+`--execute` is also present. It changes process order only; it does not flush
+the Windows filesystem cache or by itself establish a cold-cache speed gate.
+
 This second command may point at the output directory created by the preceding
 dry run. The runner reads the existing `resolution-matrix-plan.json`, re-loads
 all bound inputs, rebuilds the expected canonical plan, and requires an exact

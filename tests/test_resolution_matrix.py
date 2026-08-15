@@ -364,6 +364,41 @@ class ResolutionMatrixTests(unittest.TestCase):
             self.assertEqual(len(summary["profiles"]), 1)
             self.assertEqual(set(summary["profiles"][0]["engines"]),
                              {"h3cspeed", "comfyui"})
+            self.assertEqual(summary["execution_order"], "h3cspeed_then_comfyui")
+
+    def test_execute_can_reverse_each_profile_pair_for_counterbalance(self) -> None:
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path, _ = fixture_config(root)
+            output = root / "reverse-output"
+            plan_path, _ = runner.create_dry_plan(config_path, output, ("240",))
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            config, digest = runner.load_config(config_path)
+            with mock.patch.object(runner, "_run_child", return_value=0) as launched:
+                runner.execute_plan(plan, output, config, digest, reverse_order=True)
+            self.assertEqual(launched.call_count, 2)
+            self.assertIn("perf002_comfy_trace.py", launched.call_args_list[0].args[0][1])
+            self.assertEqual(launched.call_args_list[1].args[0][0],
+                             config["powershell_executable"])
+            summary = json.loads(
+                (output / "resolution-matrix-execution.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["execution_order"], "comfyui_then_h3cspeed")
+
+    def test_reverse_order_requires_explicit_execute(self) -> None:
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path, _ = fixture_config(root)
+            output = root / "reverse-dry-output"
+            with mock.patch.object(runner, "_run_child") as launched:
+                result = runner.main([
+                    "--config", str(config_path), "--output-dir", str(output),
+                    "--profiles", "240", "--reverse-order",
+                ])
+            self.assertEqual(result, 2)
+            self.assertFalse(output.exists())
+            launched.assert_not_called()
 
     def test_execute_summary_is_no_clobber(self) -> None:
         runner = load_runner()

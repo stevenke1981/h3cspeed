@@ -756,7 +756,7 @@ def load_existing_plan(path: Path) -> tuple[dict[str, Any], bytes]:
 
 
 def execute_plan(plan: dict[str, Any], output_root: Path, config: dict[str, Any],
-                 config_digest: str) -> dict[str, Any]:
+                 config_digest: str, *, reverse_order: bool = False) -> dict[str, Any]:
     """Execute after explicit opt-in and publish per-engine wall-time evidence."""
     validate_plan(plan, output_root)
     selected = [contract["profile"] for contract in plan["contracts"]]
@@ -768,8 +768,20 @@ def execute_plan(plan: dict[str, Any], output_root: Path, config: dict[str, Any]
         raise ContractError("execution summary already exists (no-clobber)")
     _reject_link_chain(summary_path, "resolution-matrix execution summary")
     contracts = {contract["profile"]: contract for contract in plan["contracts"]}
-    executions: list[dict[str, Any]] = []
+    # Keep profile order deterministic, but allow a per-profile reverse pair
+    # for counterbalancing filesystem/process warm-up.  The canonical plan is
+    # intentionally unchanged; only the child launch order changes.
+    commands_by_profile: dict[str, list[dict[str, Any]]] = {
+        contract["profile"]: [] for contract in plan["contracts"]
+    }
     for command in plan["commands"]:
+        commands_by_profile.setdefault(command["profile"], []).append(command)
+    ordered_commands: list[dict[str, Any]] = []
+    for contract in plan["contracts"]:
+        pair = commands_by_profile.get(contract["profile"], [])
+        ordered_commands.extend(reversed(pair) if reverse_order else pair)
+    executions: list[dict[str, Any]] = []
+    for command in ordered_commands:
         # Re-hash shared inputs immediately before each child.  A long H3 run
         # must not let a modified reference/prompt reach the paired Comfy run.
         validate_plan(plan, output_root)
@@ -838,6 +850,10 @@ def execute_plan(plan: dict[str, Any], output_root: Path, config: dict[str, Any]
         "status": "EXECUTED_UNVERIFIED",
         "plan_sha256": hashlib.sha256(canonical_bytes(plan)).hexdigest(),
         "config_sha256": config_digest,
+        "execution_order": (
+            "comfyui_then_h3cspeed" if reverse_order
+            else "h3cspeed_then_comfyui"
+        ),
         "profiles": by_profile,
         "acceptance": {
             "process_completion": "PASS",
@@ -860,12 +876,17 @@ def build_parser() -> argparse.ArgumentParser:
                         default=list(PROFILE_DIMENSIONS))
     parser.add_argument("--execute", action="store_true",
                         help="explicitly launch the GPU producer after dry validation")
+    parser.add_argument("--reverse-order", action="store_true",
+                        help=("launch ComfyUI before H3cspeed within each profile; "
+                              "requires --execute and records the order in the summary"))
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.reverse_order and not args.execute:
+            raise ContractError("--reverse-order requires --execute")
         output = Path(os.path.abspath(args.output_dir))
         plan_path = output / "resolution-matrix-plan.json"
         if args.execute and output.exists():
@@ -882,7 +903,8 @@ def main(argv: list[str] | None = None) -> int:
             if plan_payload != canonical_bytes(fresh):
                 raise ContractError(
                     "existing resolution-matrix plan does not match the current config")
-            execute_plan(fresh, output, config, current_digest)
+            execute_plan(fresh, output, config, current_digest,
+                         reverse_order=args.reverse_order)
         else:
             plan_path, digest = create_dry_plan(args.config, output, args.profiles)
             if args.execute:
@@ -894,7 +916,8 @@ def main(argv: list[str] | None = None) -> int:
                 fresh = build_plan(config, current_digest, output, args.profiles)
                 if plan_payload != canonical_bytes(fresh):
                     raise ContractError("resolution-matrix dry plan changed before execution")
-                execute_plan(fresh, output, config, current_digest)
+                execute_plan(fresh, output, config, current_digest,
+                             reverse_order=args.reverse_order)
     except (ContractError, OSError) as error:
         print(f"resolution-matrix dry plan failed: {error}", file=sys.stderr)
         return 2
