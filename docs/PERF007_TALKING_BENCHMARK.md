@@ -97,7 +97,7 @@ weights and immediately reread them.
 The source fix moves the future-block reservation until after the current
 block has enqueued its work, while retaining the existing ready/last-use event
 fences. For the opt-in prefetch route, the automatic host-cache policy also
-uses 85% (instead of 60%) of currently available RAM, still capped at 64 GiB
+uses the same retain-available-RAM-minus-2-GiB host cache as the default path, still capped at 64 GiB
 and clamped to leave 2 GiB free; an explicit `H3_CUDA_HOST_CACHE_MIB` value
 continues to take precedence.
 

@@ -171,18 +171,16 @@ int h3cspeed_offload_policy_resolve(
     policy->weight_cache_bytes = min_u64(default_weight_cache,
                                          policy->vram_budget_bytes / 3);
 
-    /* The one-ahead DiT path rereads the same file-backed weights when its
-     * conservative cache fills.  It is opt-in and already bounded by the
-     * hard headroom clamp below, so let that path use more of currently
-     * available RAM by default.  An explicit H3_CUDA_HOST_CACHE_MIB override
-     * still wins and is clamped to the same safety limit. */
-    uint64_t host_cache_percent =
-        getenv("H3_CUDA_DIT_PREFETCH") &&
-        !strcmp(getenv("H3_CUDA_DIT_PREFETCH"), "1") ? 85u : 60u;
-    uint64_t default_host_cache =
-        system_memory_bytes * host_cache_percent / 100;
-    policy->host_cache_bytes = min_u64(default_host_cache,
-                                       UINT64_C(64) * H3_GIB);
+    /* ComfyUI-like residency: keep file-backed weights in RAM whenever the
+     * host can hold them.  Leave 2 GiB for OS/FFmpeg/desktop.  The older
+     * 60%/85% split left a 19.53 GiB DiT pack on the file tier of a 32 GiB
+     * box and reread it every denoise step.  H3_CUDA_DIT_PREFETCH no longer
+     * changes this size; it only overlaps the next VRAM upload.  An explicit
+     * H3_CUDA_HOST_CACHE_MIB still wins and is clamped to the same limit. */
+    uint64_t host_hard_limit = system_memory_bytes > UINT64_C(2) * H3_GIB ?
+        system_memory_bytes - UINT64_C(2) * H3_GIB :
+        system_memory_bytes * UINT64_C(75) / UINT64_C(100);
+    policy->host_cache_bytes = min_u64(host_hard_limit, UINT64_C(64) * H3_GIB);
     policy->pinned_host_bytes = min_u64(policy->host_cache_bytes,
         (policy->low_vram ? UINT64_C(128) : UINT64_C(512)) * H3_MIB);
     policy->staging_bytes = UINT64_C(64) * H3_MIB;
@@ -205,12 +203,8 @@ int h3cspeed_offload_policy_resolve(
             return 0;
     }
 
-    /* Keep enough pageable host memory for H3 metadata, FFmpeg, the OS and
-     * WSL2 itself. An explicit cache request is therefore a ceiling, not a
-     * promise to consume memory that was not available at context creation. */
-    uint64_t host_hard_limit = system_memory_bytes > UINT64_C(2) * H3_GIB ?
-        system_memory_bytes - UINT64_C(2) * H3_GIB :
-        system_memory_bytes * UINT64_C(75) / UINT64_C(100);
+    /* An explicit cache request is a ceiling, not a promise to consume
+     * memory that was not available at context creation. */
     if (policy->host_cache_bytes > host_hard_limit)
         policy->host_cache_bytes = host_hard_limit;
     /* An explicit budget is still clamped to memory that was actually free at

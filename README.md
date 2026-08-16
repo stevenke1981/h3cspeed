@@ -464,7 +464,7 @@ All values use MiB:
 | `H3_CUDA_OFFLOAD` | `ram+file` | `auto`, `ram+file`, or `off` |
 | `H3_CUDA_VRAM_BUDGET_MIB` | `5888` | hard budget for all tracked CUDA allocations |
 | `H3_CUDA_WEIGHT_CACHE_MIB` | `1536` | maximum resident offloadable weights |
-| `H3_CUDA_HOST_CACHE_MIB` | automatic | system-RAM cache; default 60% of currently available RAM, capped at 64 GiB |
+| `H3_CUDA_HOST_CACHE_MIB` | automatic | system-RAM cache; default all currently available RAM minus 2 GiB, capped at 64 GiB |
 | `H3_CUDA_PINNED_HOST_MIB` | `128` | pinned host-copy cap, excluding staging |
 | `H3_CUDA_STAGING_MIB` | `64` | reusable RAM/file-to-GPU transfer window |
 | `H3_CUDA_ASYNC_REFILL` | unset | set exactly `1` to split pinned staging into two event-fenced refill slots |

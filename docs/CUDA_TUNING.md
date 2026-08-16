@@ -70,7 +70,17 @@ an immediate allocation failure.
 - `H3_PROFILE_JSON_DIR=PATH` enable profiling and atomically write one
   machine-readable JSON report per CUDA context to an existing directory
 
-`H3_CUDA_ASYNC_REFILL` is deliberately disabled by default. When it is exactly
+The hybrid quantized wrappers (`scripts/run-h3-quantized.ps1` and
+`scripts/run_h3_quantized_60s.py`) now default `H3_CUDA_ASYNC_REFILL=1`,
+`H3_CUDA_DIT_PREFETCH=1` and `H3_CUDA_ATTENTION=sage` when the caller has not
+already set those variables. ConvRot INT8 disables `--ssd-streaming` and uses
+the RAM/file LRU. The host cache now keeps available RAM minus 2 GiB so the
+19.53 GiB DiT pack can stay resident; prefetch only overlaps the next VRAM
+upload. An explicit `0` or other caller value is
+left unchanged and restored when the wrapper exits.
+
+`H3_CUDA_ASYNC_REFILL` remains disabled by default for direct `h3cspeed`
+invocations. When it is exactly
 `1` and the staging allocation is pinned, the runtime splits the configured
 staging window into two equal slots. A slot is reused only after its recorded
 H2D completion event finishes; the tensor upload-ready event is still recorded
@@ -78,6 +88,14 @@ after all chunks have been enqueued. If pinned staging or either slot event is
 unavailable, the runtime keeps the original single-buffer synchronous path.
 This switch does not increase the configured staging allocation and does not by
 itself prove end-to-end DiT overlap or a video wall-time improvement.
+
+When a file-backed, non-streaming weight is evicted from the host RAM cache and
+later prepared again, `upload_weight_locked` first tries to re-enter that
+weight into the host cache (evicting colder file-backed copies if needed) and
+then uploads from RAM. SSD stream slots stay file-bound. This is a cache-tier
+repair, not a layout or numerical change: the first reuse after a spill may
+still read the file, but later prepares of the same tensor do not. The stderr
+summary reports `host-promote=N/GiB` as a diagnostic.
 
 When RAM/file offload is active, an evicted weight allocation enters a bounded
 same-size device-allocation reuse pool only after its upload-ready and last-use
@@ -146,12 +164,13 @@ final filename without replacing an existing report.
 
 ## Sizing the RAM cache
 
-The automatic host cache is 60% of system RAM currently available at context
-creation, capped at 64 GiB and further clamped to leave at least 2 GiB free.
-When the opt-in `H3_CUDA_DIT_PREFETCH=1` path is enabled, the default rises to
-85% of currently available RAM because one-ahead DiT prefetch benefits from
-retaining more file-backed weights; the same 2 GiB headroom clamp still wins.
-An explicit `H3_CUDA_HOST_CACHE_MIB` value always overrides the percentage.
+The automatic host cache keeps file-backed weights resident the same way
+ComfyUI keeps a loaded checkpoint in RAM: it uses all currently available
+system RAM minus 2 GiB, capped at 64 GiB. This is large enough to hold the
+19.53 GiB ConvRot INT8 DiT pack on a 32 GiB host that still has ~22 GiB free.
+`H3_CUDA_DIT_PREFETCH` no longer changes the cache size; it only overlaps the
+next VRAM upload. An explicit `H3_CUDA_HOST_CACHE_MIB` value always overrides
+the automatic size and is still clamped to leave 2 GiB free.
 Under WSL2, available memory is measured inside the WSL VM. Leave enough RAM for
 the Linux kernel, page cache, FFmpeg, CPU-side model data and Windows itself.
 
@@ -209,6 +228,10 @@ INT8 tensor. Assign more memory to WSL2 or raise `H3_CUDA_HOST_CACHE_MIB`.
 
 Frequent `file-fallback` traffic in the final profile line means the RAM cache
 is too small for the hot working set or the run is intentionally SSD-bound.
+On this acceptance host the FL2VA pack lives on drive `E:` (ST4000DM004 SATA
+HDD, measured ~118 MiB/s). A 40 GiB file-tier reread is then several minutes
+by itself. Move the prepared model root to NVMe when possible; the host-cache
+promote path can only hide rereads that fit in RAM.
 
 ## Performance expectations
 

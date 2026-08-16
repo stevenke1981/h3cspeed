@@ -690,3 +690,36 @@ focused test reported two fenced-candidate selections; CTest disabled/async
 both passed, and Compute Sanitizer memcheck/racecheck reported zero errors or
 hazards. No full-model wall-time claim is attached to this slice; matched
 240p/480p/720p speed gates remain separate.
+
+## 14. Host-cache promote and quantized-runner defaults
+
+The 240p DiT profile's 124 s file-read bucket is not a compute problem. On the
+acceptance host the 19.53 GiB ConvRot INT8 pack lives on drive `E:`
+(ST4000DM004 SATA HDD, measured 117.7 MiB/s on a 4 GiB sequential sample).
+The default host cache is now all currently available RAM minus 2 GiB
+(capped at 64 GiB), so a 32 GiB box with ~22 GiB free can keep the 19.53 GiB
+DiT pack resident. `H3_CUDA_DIT_PREFETCH` no longer changes that size. The
+file-fallback upload path also re-enters the host cache on the next prepare,
+so a spill does not stay disk-bound.
+
+This slice:
+
+- promotes a spilled file-backed, non-streaming weight back into the host
+  cache on the next `upload_weight_locked` when room exists;
+- keeps `FILE_FLAG_SEQUENTIAL_SCAN` on Windows `pread` so the OS page cache
+  does not double-buffer the explicit RAM cache, but drops the invalid
+  `FILE_ATTRIBUTE_NORMAL` bit that `ReOpenFile` rejects;
+- defaults `H3_CUDA_DIT_PREFETCH=1`, `H3_CUDA_ASYNC_REFILL=1` and
+  `H3_CUDA_ATTENTION=sage` in the hybrid quantized wrappers when unset.
+
+A real 256x256/22-frame/4-step sidecar run on the RTX 3070 Ti (2026-08-16,
+driver 596.36, CUDA 13.2, binary `build-native-final-current\h3cspeed.exe`)
+completed in 196.454 s, exit 0, H.264 256x256/22 frames plus AAC. The DiT
+scope reported RAM cache 18.88 GiB, peak-host 17.96 GiB, host-evictions 0,
+host-promote 0, and **file-fallback=0/0.00 GiB**. VRAM still uploaded
+73.33 GiB (8 GiB card LRU); those bytes came from RAM, not the HDD. This is
+ComfyUI-like host residency for this shape, not a matched 240p/480p A/B.
+
+This is not a matched ComfyUI A/B and does not claim the 1.20x approach gate.
+VRAM eviction time remains the other large DiT bucket. Moving the model root
+off the HDD still helps first-load time.

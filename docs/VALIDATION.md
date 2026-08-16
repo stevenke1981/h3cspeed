@@ -38,9 +38,11 @@ Acceptance:
 
 `test_cuda_offload` creates multiple multi-chunk file-backed tensors under a
 small artificial VRAM budget, forces eviction/reload, and validates canaries at
-every staging-slot boundary and tensor tail. CTest runs both the legacy
-synchronous path and `H3_CUDA_ASYNC_REFILL=1`; the two cases use unique fixture
-names so they are safe under parallel CTest. Generated-INT8 cycling remains a
+every staging-slot boundary and tensor tail. CTest runs the legacy
+synchronous path, `H3_CUDA_ASYNC_REFILL=1`, and a `H3_CUDA_HOST_CACHE_MIB=64`
+promote path; the cases use unique fixture names so they are safe under
+parallel CTest. The promote case requires the reloaded tensor to re-enter the
+host cache with zero file-fallback uploads. Generated-INT8 cycling remains a
 separate completion gate.
 
 The async case also sets `H3_CUDA_REFILL_TRACE=1`. After a warm-up refill it

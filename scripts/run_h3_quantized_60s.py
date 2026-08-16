@@ -416,6 +416,8 @@ def build_runtime_environment(
         "H3_CUDA_WEIGHT_CACHE_MIB": "1536",
         "H3_CUDA_PINNED_HOST_MIB": "128",
         "H3_CUDA_STAGING_MIB": "64",
+        "H3_CUDA_ASYNC_REFILL": "1",
+        "H3_CUDA_DIT_PREFETCH": "1",
         "H3_CUDA_RELEASE_SCRATCH": "1",
         "H3_PROFILE": "1",
         "H3_FFMPEG": ffmpeg,

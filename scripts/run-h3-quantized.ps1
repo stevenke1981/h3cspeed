@@ -140,6 +140,9 @@ $exitCode = 2
 $oldSidecar = [Environment]::GetEnvironmentVariable("H3CSPEED_TEXT_EMBEDDING", "Process")
 $oldEncoderSha = [Environment]::GetEnvironmentVariable("H3CSPEED_TEXT_ENCODER_SHA256", "Process")
 $oldCudaDevice = [Environment]::GetEnvironmentVariable("H3_CUDA_DEVICE", "Process")
+$oldAsyncRefill = [Environment]::GetEnvironmentVariable("H3_CUDA_ASYNC_REFILL", "Process")
+$oldDitPrefetch = [Environment]::GetEnvironmentVariable("H3_CUDA_DIT_PREFETCH", "Process")
+$oldAttention = [Environment]::GetEnvironmentVariable("H3_CUDA_ATTENTION", "Process")
 
 try {
     if ([string]::IsNullOrWhiteSpace($Prompt)) {
@@ -305,6 +308,19 @@ try {
     } else {
         "0"
     }
+    # ConvRot INT8 disables --ssd-streaming and uses RAM/file LRU.  The
+    # runtime now keeps available RAM minus 2 GiB for the host cache so the
+    # 19.53 GiB DiT pack can stay resident.  Prefetch only overlaps the next
+    # VRAM upload.
+    if ([string]::IsNullOrWhiteSpace($env:H3_CUDA_ASYNC_REFILL)) {
+        $env:H3_CUDA_ASYNC_REFILL = "1"
+    }
+    if ([string]::IsNullOrWhiteSpace($env:H3_CUDA_DIT_PREFETCH)) {
+        $env:H3_CUDA_DIT_PREFETCH = "1"
+    }
+    if ([string]::IsNullOrWhiteSpace($env:H3_CUDA_ATTENTION)) {
+        $env:H3_CUDA_ATTENTION = "sage"
+    }
     $cliArguments = @(
         "-d", $modelRoot,
         "-p", $Prompt,
@@ -344,6 +360,9 @@ try {
     Restore-ProcessEnvironmentVariable "H3CSPEED_TEXT_EMBEDDING" $oldSidecar
     Restore-ProcessEnvironmentVariable "H3CSPEED_TEXT_ENCODER_SHA256" $oldEncoderSha
     Restore-ProcessEnvironmentVariable "H3_CUDA_DEVICE" $oldCudaDevice
+    Restore-ProcessEnvironmentVariable "H3_CUDA_ASYNC_REFILL" $oldAsyncRefill
+    Restore-ProcessEnvironmentVariable "H3_CUDA_DIT_PREFETCH" $oldDitPrefetch
+    Restore-ProcessEnvironmentVariable "H3_CUDA_ATTENTION" $oldAttention
 }
 
 if ($exitCode -ne 0) {

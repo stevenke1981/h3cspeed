@@ -446,7 +446,7 @@ profiles/rtx3070ti-8gb.env
 | `H3_CUDA_OFFLOAD` | `ram+file` | `auto`、`ram+file` 或 `off` |
 | `H3_CUDA_VRAM_BUDGET_MIB` | `5888` | 所有 CUDA allocation 的總預算 |
 | `H3_CUDA_WEIGHT_CACHE_MIB` | `1536` | VRAM 內可卸載熱權重上限 |
-| `H3_CUDA_HOST_CACHE_MIB` | 自動 | 預設目前可用系統 RAM 的 60%，最高 64GiB |
+| `H3_CUDA_HOST_CACHE_MIB` | 自動 | 預設目前可用系統 RAM 減 2GiB，最高 64GiB |
 | `H3_CUDA_PINNED_HOST_MIB` | `128` | pinned RAM 上限，不含 staging |
 | `H3_CUDA_STAGING_MIB` | `64` | RAM／SSD 搬到 GPU 的分段緩衝區 |
 | `H3_CUDA_ASYNC_REFILL` | 未設定 | 僅精確設為 `1` 時，將 pinned staging 切成兩個具 event fence 的 refill slot |

@@ -1,8 +1,8 @@
 /* Focused CUDA offload/refill acceptance test.  It deliberately uses a
  * file-backed tensor larger than the staging buffer, then exceeds the weight
- * cache and reloads the first tensor.  CTest runs this once with
- * H3_CUDA_ASYNC_REFILL=0 and once with =1; both paths must return the same
- * deterministic canaries. */
+ * cache and reloads the first tensor.  CTest runs this with
+ * H3_CUDA_ASYNC_REFILL=0, =1, and a non-zero host-cache promote path.  All
+ * three must return the same deterministic canaries. */
 
 #include "h3_cuda_common.cuh"
 #include "h3_gpu.h"
@@ -342,10 +342,25 @@ int main(void) {
      * tensor zero again must rebuild it from its authoritative file source. */
     if (ok) ok = check_tensor(tensors[0], 0, tensor_bytes, chunk_bytes);
     if (ok) {
+        const char *host_cache = getenv("H3_CUDA_HOST_CACHE_MIB");
+        const int host_promote = host_cache && *host_cache &&
+                                 strcmp(host_cache, "0") != 0;
         CHECK(gpu->offload_evictions >= 1);
         CHECK(gpu->fence_ready_evictions >= 1);
         CHECK(gpu->offload_uploads >= 6);
-        CHECK(gpu->file_fallback_reads >= 6);
+        if (host_promote) {
+            CHECK(tensors[0]->host_data != nullptr);
+            CHECK(tensors[0]->host_valid == 1);
+            CHECK(gpu->host_cache_promotions >= 1);
+            CHECK(gpu->file_fallback_reads == 0);
+            const uint64_t fallback_before = gpu->file_fallback_reads;
+            const uint64_t promotions_before = gpu->host_cache_promotions;
+            CHECK(check_tensor(tensors[0], 0, tensor_bytes, chunk_bytes));
+            CHECK(gpu->file_fallback_reads == fallback_before);
+            CHECK(gpu->host_cache_promotions == promotions_before);
+        } else {
+            CHECK(gpu->file_fallback_reads >= 6);
+        }
         CHECK(gpu->weight_reuse_stores >= 1);
         CHECK(gpu->weight_reuse_hits >= 1);
         CHECK(gpu->weight_reuse_pool_count <=

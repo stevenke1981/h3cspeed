@@ -82,10 +82,14 @@ int64_t pread(int fd, void *buffer, size_t bytes, int64_t offset) {
         return -1;
     }
     /* ReOpenFile gives this read an independent cursor, preserving POSIX
-     * pread semantics even when offload workers read the same tensor file. */
+     * pread semantics even when offload workers read the same tensor file.
+     * dwFlags may contain only FILE_FLAG_* bits; FILE_ATTRIBUTE_NORMAL is
+     * invalid here and forced the serialized seek/_read fallback. Keep
+     * SEQUENTIAL_SCAN so the OS page cache does not double-buffer weights
+     * that the explicit host RAM cache already retains. */
     HANDLE reopened = ReOpenFile(original, GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN);
+        FILE_FLAG_SEQUENTIAL_SCAN);
     if (reopened != INVALID_HANDLE_VALUE) {
         LARGE_INTEGER position;
         position.QuadPart = offset;

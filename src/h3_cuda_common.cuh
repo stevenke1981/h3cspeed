@@ -167,6 +167,10 @@ struct h3_gpu {
     uint64_t file_fallback_bytes;
     uint64_t host_cache_evictions;
     uint64_t host_cache_evicted_bytes;
+    /* File-backed weights re-entered into the RAM cache on a later prepare.
+     * Diagnostic only; it does not change upload or file-fallback counters. */
+    uint64_t host_cache_promotions;
+    uint64_t host_cache_promoted_bytes;
     h3_gpu_tensor *lru_head;
     h3_gpu_tensor *lru_tail;
     h3_gpu_tensor *host_lru_head;

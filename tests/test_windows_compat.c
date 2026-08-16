@@ -64,6 +64,15 @@ int main(int argc, char **argv) {
             close(file); unlink(file_pattern);
             return fail("64-bit binary pread");
         }
+        file_handle = (HANDLE)_get_osfhandle(file);
+        HANDLE reopened = ReOpenFile(file_handle, GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_FLAG_SEQUENTIAL_SCAN);
+        if (reopened == INVALID_HANDLE_VALUE) {
+            close(file); unlink(file_pattern);
+            return fail("ReOpenFile sequential scan flags");
+        }
+        CloseHandle(reopened);
         struct stat status;
         if (fstat(file, &status) != 0 || status.st_size != offset + 4) {
             close(file); unlink(file_pattern); return fail("64-bit fstat");

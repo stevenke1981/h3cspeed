@@ -508,6 +508,10 @@ if(H3CSPEED_ENABLE_TESTS)
     set_tests_properties(cuda_offload_async_refill PROPERTIES
         SKIP_RETURN_CODE 77
         ENVIRONMENT "H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=0;H3_CUDA_PINNED_HOST_MIB=0;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=1;H3_CUDA_REFILL_TRACE=1")
+    add_test(NAME cuda_offload_host_promote COMMAND test_cuda_offload)
+    set_tests_properties(cuda_offload_host_promote PROPERTIES
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "H3_CUDA_OFFLOAD=ram+file;H3_CUDA_VRAM_BUDGET_MIB=512;H3_CUDA_WEIGHT_CACHE_MIB=128;H3_CUDA_HOST_CACHE_MIB=64;H3_CUDA_PINNED_HOST_MIB=0;H3_CUDA_STAGING_MIB=4;H3_CUDA_ASYNC_REFILL=0;H3_CUDA_REFILL_TRACE=0")
     add_test(NAME cuda_dit_prefetch_disabled COMMAND test_cuda_dit_prefetch)
     set_tests_properties(cuda_dit_prefetch_disabled PROPERTIES
         SKIP_RETURN_CODE 77

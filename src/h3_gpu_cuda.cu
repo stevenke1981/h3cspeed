@@ -1042,11 +1042,52 @@ static int staging_slot_record_locked(h3_gpu *gpu, size_t slot) {
     return h3cspeed_cuda_ok(gpu, status, "record staging slot DMA");
 }
 
+static int promote_file_weight_to_host_locked(h3_gpu *gpu,
+                                              h3_gpu_tensor *tensor) {
+    if (!gpu || !tensor || !tensor->source_path || !tensor->source_bytes ||
+        tensor->source_streaming) return 0;
+    if (tensor->host_data && tensor->host_valid) return 1;
+    if (!tensor->host_data && !host_backing_allocate_locked(gpu, tensor))
+        return 0;
+
+    int descriptor = open(tensor->source_path, O_RDONLY | O_CLOEXEC);
+    if (descriptor < 0) {
+        host_backing_release_locked(gpu, tensor);
+        return 0;
+    }
+    char read_error[256] = {0};
+    int ok = read_exact(gpu, descriptor, tensor->host_data,
+                        tensor->source_bytes, tensor->source_offset,
+                        read_error, sizeof(read_error));
+    close(descriptor);
+    if (ok && tensor->source_bytes < tensor->bytes) {
+        memset(static_cast<unsigned char *>(tensor->host_data) +
+                   tensor->source_bytes,
+               0, tensor->bytes - tensor->source_bytes);
+    }
+    if (!ok) {
+        host_backing_release_locked(gpu, tensor);
+        return 0;
+    }
+    tensor->host_valid = 1;
+    host_lru_append_locked(gpu, tensor);
+    gpu->host_cache_promotions++;
+    gpu->host_cache_promoted_bytes += tensor->source_bytes;
+    return 1;
+}
+
 static int upload_weight_locked(h3_gpu *gpu, h3_gpu_tensor *tensor) {
     if (!gpu || !tensor || !tensor->data || !tensor->source_bytes) return 0;
     uint64_t trace_refill_id = 0;
     if (tensor->host_data && tensor->host_valid)
         host_lru_append_locked(gpu, tensor);
+    /* A spill used to bind the tensor to the file tier forever, even after
+     * later host-cache evictions freed room.  Re-enter the RAM cache on the
+     * next prepare so step N+1 does not reread the same bytes from disk.
+     * SSD stream slots stay file-bound by design. */
+    if ((!tensor->host_data || !tensor->host_valid) &&
+        tensor->source_path && !tensor->source_streaming)
+        (void)promote_file_weight_to_host_locked(gpu, tensor);
     if (tensor->host_data && tensor->host_valid && tensor->host_pinned) {
         if (!h3cspeed_cuda_ok(gpu,
             profiled_h2d_async(gpu, tensor->data, tensor->host_data,
@@ -1711,6 +1752,7 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
             "uploads=%" PRIu64 "/%.2f GiB evictions=%" PRIu64
             "/%.2f GiB host-evictions=%" PRIu64 "/%.2f GiB "
             "weight-reuse=%" PRIu64 "/%" PRIu64 " pool=%.2f MiB "
+            "host-promote=%" PRIu64 "/%.2f GiB "
             "file-fallback=%" PRIu64 "/%.2f GiB linear=%" PRIu64
             " conv=%" PRIu64 " sdpa=%" PRIu64 "\n",
             has_safe_label ? " [" : "",
@@ -1732,6 +1774,9 @@ extern "C" void h3_gpu_free(h3_gpu *gpu) {
             gpu->weight_reuse_hits,
             gpu->weight_reuse_stores,
             (double)gpu->weight_reuse_pool_bytes / (1024.0 * 1024.0),
+            gpu->host_cache_promotions,
+            (double)gpu->host_cache_promoted_bytes /
+                (1024.0 * 1024.0 * 1024.0),
             gpu->file_fallback_reads,
             (double)gpu->file_fallback_bytes / (1024.0 * 1024.0 * 1024.0),
             gpu->stats.mps_linear_dispatches,

@@ -90,3 +90,7 @@ id_ed25519
 *.zip.sha256
 *.tar.gz
 *.tar.gz.sha256
+
+# Local OpenCode session state (plans, memory DBs).
+.opencode/
+

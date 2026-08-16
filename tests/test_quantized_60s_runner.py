@@ -197,6 +197,8 @@ class Quantized60SecondRunnerTests(unittest.TestCase):
             '"H3_CUDA_OFFLOAD": "ram+file"',
             '"H3_CUDA_VRAM_BUDGET_MIB": "5888"',
             '"H3_CUDA_WEIGHT_CACHE_MIB": "1536"',
+            '"H3_CUDA_ASYNC_REFILL": "1"',
+            '"H3_CUDA_DIT_PREFETCH": "1"',
             '"--first-frame"',
             '"-xerror"',
             'trim=end_frame={FINAL_FRAMES}',

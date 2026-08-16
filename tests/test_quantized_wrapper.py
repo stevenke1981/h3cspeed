@@ -48,6 +48,12 @@ class QuantizedWrapperStaticTests(unittest.TestCase):
         self.assertIn('"--seed", $Seed', self.source)
         self.assertIn('$env:H3_CUDA_DEVICE', self.source)
         self.assertIn('Restore-ProcessEnvironmentVariable "H3_CUDA_DEVICE"', self.source)
+        self.assertIn('$env:H3_CUDA_ASYNC_REFILL = "1"', self.source)
+        self.assertIn('$env:H3_CUDA_DIT_PREFETCH = "1"', self.source)
+        self.assertIn('$env:H3_CUDA_ATTENTION = "sage"', self.source)
+        self.assertIn('Restore-ProcessEnvironmentVariable "H3_CUDA_ASYNC_REFILL"', self.source)
+        self.assertIn('Restore-ProcessEnvironmentVariable "H3_CUDA_DIT_PREFETCH"', self.source)
+        self.assertIn('Restore-ProcessEnvironmentVariable "H3_CUDA_ATTENTION"', self.source)
 
     def test_conditioning_bridge_and_hash_validation_are_explicit(self) -> None:
         self.assertIn("encode_h3_quantized_prompt.py", self.source)
